@@ -4,6 +4,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+import java.util.Properties
+import java.io.FileInputStream
+
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 android {
@@ -25,9 +28,9 @@ android {
         // serial. Override locally via `local.properties`
         // (`defaultDeviceId=YOURSERIAL`), which is gitignored, or with
         // `-PdefaultDeviceId=YOURSERIAL` on the command line.
-        val localProps = java.util.Properties().apply {
+        val localProps = Properties().apply {
             val f = rootProject.file("local.properties")
-            if (f.exists()) f.inputStream().use { load(it) }
+            if (f.exists()) FileInputStream(f).use { load(it) }
         }
         val defaultDeviceId = (project.findProperty("defaultDeviceId") as String?)
             ?: localProps.getProperty("defaultDeviceId")
