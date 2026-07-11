@@ -78,11 +78,19 @@ class RecordingService : Service() {
         
         when (intent?.action) {
             "START" -> {
+                val lastDeviceId = prefs?.getString(KEY_DEVICE_ID, null)
+                    ?.takeIf { it.isNotBlank() }
+                    ?: BuildConfig.DEFAULT_DEVICE_ID.takeIf { it.isNotBlank() }
+                if (lastDeviceId.isNullOrBlank()) {
+                    Log.w(TAG, "No device ID configured (no prior pairing, no DEFAULT_DEVICE_ID build config). " +
+                        "Use the debug SET_SERVER/device_id broadcast or pair from the UI first.")
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 SharedRepo.manualStop = false
                 startForeground(NOTIF_ID, createNotification(ConnectionState.Idle, null))
                 val profileName = intent.getStringExtra("PROFILE") ?: "calibration"
                 SharedRepo.repo?.startSession(Profile.byName(profileName))
-                val lastDeviceId = prefs?.getString(KEY_DEVICE_ID, null) ?: "156AC536"
                 Log.i(TAG, "Auto-connecting to device: $lastDeviceId (profile=$profileName)")
                 SharedRepo.deviceId = lastDeviceId
                 SharedRepo.repo?.connect(lastDeviceId)

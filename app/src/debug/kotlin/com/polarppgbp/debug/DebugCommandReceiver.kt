@@ -7,7 +7,7 @@
  * deterministically over adb instead of tapping the UI:
  *
  *   adb shell am broadcast -a com.polarppgbp.debug.START_RECORDING \
- *       --es profile calibration --es device_id 156AC536
+ *       --es profile calibration --es device_id AABBCCDD
  *   adb shell am broadcast -a com.polarppgbp.debug.STOP_RECORDING
  *   adb shell am broadcast -a com.polarppgbp.debug.STATUS
  *

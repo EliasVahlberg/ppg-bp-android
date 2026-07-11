@@ -39,7 +39,7 @@ Each sensor's BLE stream startup is wrapped in a retry-with-backoff loop, not a 
 A debug-only source set (`src/debug/`, excluded from release builds) exposes an ADB broadcast interface to drive the app without touching the UI — useful for wireless-ADB testing where you don't have a screen in front of you:
 
 ```bash
-adb shell am broadcast -a com.polarppgbp.debug.START_RECORDING --es profile calibration
+adb shell am broadcast -a com.polarppgbp.debug.START_RECORDING --es profile calibration --es device_id <your-polar-serial>
 adb shell am broadcast -a com.polarppgbp.debug.STOP_RECORDING
 adb shell am broadcast -a com.polarppgbp.debug.STATUS
 adb shell am broadcast -a com.polarppgbp.debug.SYNC_NOW
@@ -47,6 +47,15 @@ adb shell am broadcast -a com.polarppgbp.debug.SET_SERVER --es url http://<host>
 adb shell am broadcast -a com.polarppgbp.debug.PAIR_CUFF
 adb shell am broadcast -a com.polarppgbp.debug.READ_CUFF
 ```
+
+## Configuring your own device
+
+The app needs a Polar device ID to auto-connect to on startup. It never ships with a real device ID hardcoded. Set one of:
+
+- **Recommended:** pair once through the UI, or send a `SET_SERVER`/`device_id` debug broadcast (see above) — the app remembers it in `SharedPreferences` from then on.
+- **Build-time default:** add `defaultDeviceId=<your-polar-serial>` to your local, gitignored `local.properties`, or pass `-PdefaultDeviceId=<your-polar-serial>` to Gradle. This becomes `BuildConfig.DEFAULT_DEVICE_ID`, used only as a fallback when no device has been paired yet.
+
+If neither is set, the recording service logs a warning and refuses to start rather than silently doing nothing.
 
 Logs: `adb logcat -s PolarRepo SyncWorker CuffSyncWorker DebugCmd`
 

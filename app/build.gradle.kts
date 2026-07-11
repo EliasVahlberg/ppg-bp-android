@@ -18,6 +18,26 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+
+        // Optional fallback Polar device ID used only when the app has never
+        // been told which device to connect to (no prior SET_SERVER/pairing).
+        // Left empty by default so the repo never hardcodes a real device's
+        // serial. Override locally via `local.properties`
+        // (`defaultDeviceId=YOURSERIAL`), which is gitignored, or with
+        // `-PdefaultDeviceId=YOURSERIAL` on the command line.
+        val localProps = java.util.Properties().apply {
+            val f = rootProject.file("local.properties")
+            if (f.exists()) f.inputStream().use { load(it) }
+        }
+        val defaultDeviceId = (project.findProperty("defaultDeviceId") as String?)
+            ?: localProps.getProperty("defaultDeviceId")
+            ?: ""
+        buildConfigField("String", "DEFAULT_DEVICE_ID", "\"$defaultDeviceId\"")
+    }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
     }
 
     buildTypes {
@@ -39,10 +59,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    buildFeatures {
-        compose = true
     }
 
     sourceSets["main"].kotlin.srcDirs("src/main/kotlin")

@@ -1,1 +1,13 @@
 .kotlin/
+.gradle/
+.idea/
+build/
+app/build/
+local.properties
+build.log
+captures/
+*.iml
+*.apk
+*.aab
+*.dex
+.cxx/
