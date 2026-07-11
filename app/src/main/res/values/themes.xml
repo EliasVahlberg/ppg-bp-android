@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Base app theme. Material3 doesn't ship a "DayNight.NoActionBar" out of
+      the box; we define one explicitly. This works under -Y configurations
+      (light/dark via material-3 dynamic colors when available).
+    -->
+    <style name="Theme.PolarBpRecorder" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

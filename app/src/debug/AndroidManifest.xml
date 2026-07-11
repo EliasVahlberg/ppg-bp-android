@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only manifest. Merged into the debug build variant ONLY, so the
+  exported DebugCommandReceiver never ships in release. See
+  src/debug/kotlin/com/polarppgbp/debug/DebugCommandReceiver.kt (#22).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <receiver
+            android:name="com.polarppgbp.debug.DebugCommandReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.polarppgbp.debug.START_RECORDING" />
+                <action android:name="com.polarppgbp.debug.STOP_RECORDING" />
+                <action android:name="com.polarppgbp.debug.STATUS" />
+                <action android:name="com.polarppgbp.debug.SET_SERVER" />
+                <action android:name="com.polarppgbp.debug.SYNC_NOW" />
+                <action android:name="com.polarppgbp.debug.READ_CUFF" />
+                <action android:name="com.polarppgbp.debug.PAIR_CUFF" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
