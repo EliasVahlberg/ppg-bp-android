@@ -75,15 +75,25 @@ class RecordingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand: action=${intent?.action}")
-        
+
         when (intent?.action) {
             "START" -> {
                 val lastDeviceId = prefs?.getString(KEY_DEVICE_ID, null)
                     ?.takeIf { it.isNotBlank() }
                     ?: BuildConfig.DEFAULT_DEVICE_ID.takeIf { it.isNotBlank() }
                 if (lastDeviceId.isNullOrBlank()) {
+                    // The caller already called startForegroundService(), so Android
+                    // requires startForeground() to be called within a few seconds
+                    // regardless of outcome -- skipping it here (as this code
+                    // previously did) crashes the whole app process with a
+                    // ForegroundServiceDidNotStartInTimeException, not just this
+                    // service. Start briefly with an explanatory notification, then
+                    // stop cleanly, rather than silently killing the app on a plain
+                    // config error.
+                    startForeground(NOTIF_ID, createNotification(ConnectionState.Idle, null))
                     Log.w(TAG, "No device ID configured (no prior pairing, no DEFAULT_DEVICE_ID build config). " +
                         "Use the debug SET_SERVER/device_id broadcast or pair from the UI first.")
+                    stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                     return START_NOT_STICKY
                 }

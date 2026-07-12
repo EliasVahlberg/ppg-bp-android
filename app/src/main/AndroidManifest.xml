@@ -22,7 +22,21 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Required at runtime by RecordingService's foregroundServiceType="health"
+         declaration. Android 14/targetSdk 34 enforces this specifically;
+         the FOREGROUND_SERVICE_HEALTH manifest permission alone is not
+         sufficient. Not needed by the Polar BLE SDK itself for streaming
+         (confirmed against the SDK's own official example manifests, which
+         don't declare it); this is purely to satisfy the
+         foreground-service-type check, not a sensor-access permission this
+         app actually uses. -->
     <uses-permission android:name="android.permission.BODY_SENSORS" />
+
+    <!-- Battery-optimization exemption request (#4). Not a runtime
+         permission, but the Intent it launches (Settings.ACTION_REQUEST_
+         IGNORE_BATTERY_OPTIMIZATIONS) requires this manifest permission. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Upload session bundles to ppg-pi-server (LAN/Tailscale, plain HTTP). -->
     <uses-permission android:name="android.permission.INTERNET" />

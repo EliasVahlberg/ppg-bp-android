@@ -7,9 +7,7 @@
 
 package com.polarppgbp
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -43,7 +41,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -94,37 +91,83 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private val requiredPermissions = arrayOf(
-        Manifest.permission.BLUETOOTH_SCAN,
-        Manifest.permission.BLUETOOTH_CONNECT,
-        Manifest.permission.POST_NOTIFICATIONS,
-        Manifest.permission.BODY_SENSORS,
-    )
-
-    private val permissionLauncher = registerForActivityResult(
+    // Registered once at Activity creation (required by the Activity Result
+    // API), but re-triggerable by any checklist item -- see setupPermissionRequest.
+    private var pendingPermissionResult: (() -> Unit)? = null
+    private val setupPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { results -> viewModel.permissionsGranted = results.values.all { it } }
+    ) { _ -> pendingPermissionResult?.invoke() }
 
-    private fun checkAndMaybeRequestPermissions() {
-        val missing = requiredPermissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-        if (missing.isEmpty()) viewModel.permissionsGranted = true
-        else permissionLauncher.launch(missing.toTypedArray())
+    private var pendingSettingsResult: (() -> Unit)? = null
+    private val setupSettingsLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { _ -> pendingSettingsResult?.invoke() }
+
+    /** Called by FirstRunScreen checklist items -- fires the real system
+     * permission dialog for exactly the permissions that item needs,
+     * mirroring what a normal Android permission request looks like
+     * (no bespoke bulk-request UI). */
+    fun requestSetupPermissions(permissions: Array<String>, onResult: () -> Unit) {
+        pendingPermissionResult = onResult
+        setupPermissionLauncher.launch(permissions)
+    }
+
+    /** For checklist items granted via a Settings screen rather than a
+     * runtime permission (currently: battery-optimization exemption).
+     * Uses StartActivityForResult (not a plain startActivity) purely to
+     * get a callback on return, so the checklist re-checks live state
+     * immediately instead of waiting for the next onResume. */
+    fun requestSetupSettingsIntent(intent: Intent, onResult: () -> Unit) {
+        pendingSettingsResult = onResult
+        setupSettingsLauncher.launch(intent)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        checkAndMaybeRequestPermissions()
         setContent {
             PpgBpTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val navController = rememberNavController()
-                    NavHost(navController = navController, startDestination = "recorder") {
+                    val startDestination = if (allSetupRequirementsMet(this)) "recorder" else "setup"
+
+                    // A permission revoked mid-use (Android lets users revoke anytime,
+                    // e.g. from system Settings) routes back to the checklist instead
+                    // of the recorder/settings screens silently degrading -- #4's
+                    // explicit "re-surfacing" requirement. viewModel.permissionsGranted
+                    // is a mutableStateOf property, so reading it here already makes
+                    // this LaunchedEffect's key recompute on change.
+                    LaunchedEffect(viewModel.permissionsGranted) {
+                        val current = navController.currentBackStackEntry?.destination?.route
+                        if (!viewModel.permissionsGranted && current != "setup") {
+                            navController.navigate("setup") { popUpTo(0) }
+                        }
+                    }
+
+                    NavHost(navController = navController, startDestination = startDestination) {
+                        composable("setup") {
+                            // Bumped after any grant action forces FirstRunScreen to
+                            // recompose and re-read live permission/battery state.
+                            var refreshTrigger by remember { mutableStateOf(0) }
+                            FirstRunScreen(
+                                context = this@MainActivity,
+                                refreshKey = refreshTrigger,
+                                onRequestPermissions = { perms ->
+                                    requestSetupPermissions(perms) { refreshTrigger++ }
+                                },
+                                onRequestSettingsIntent = { buildIntent ->
+                                    requestSetupSettingsIntent(buildIntent(this@MainActivity)) { refreshTrigger++ }
+                                },
+                                onContinue = {
+                                    viewModel.permissionsGranted = true
+                                    navController.navigate("recorder") {
+                                        popUpTo("setup") { inclusive = true }
+                                    }
+                                },
+                            )
+                        }
                         composable("recorder") {
                             RecorderScreen(
                                 viewModel,
-                                onRequestPermissions = { checkAndMaybeRequestPermissions() },
                                 onOpenSettings = { navController.navigate("settings") },
                             )
                         }
@@ -139,12 +182,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        viewModel.permissionsGranted = requiredPermissions.all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
-        }
+        viewModel.permissionsGranted = allSetupRequirementsMet(this)
         viewModel.refreshSessions()
     }
 }
+
 
 /** Coarse recorder phase derived from (recording, connectionState). onColor
  * picks readable text for each phase's (bright vs muted/dark) background. */
@@ -173,7 +215,6 @@ private fun detailOf(recording: Boolean, s: ConnectionState): String = when (s) 
 @Composable
 private fun RecorderScreen(
     viewModel: MainViewModel,
-    onRequestPermissions: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val connectionState by viewModel.connectionState.collectAsState()
@@ -290,17 +331,11 @@ private fun RecorderScreen(
 
             Spacer(Modifier.height(Spacing.xs))
 
-            if (!viewModel.permissionsGranted) {
-                Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
-                    Text("Grant Bluetooth permissions")
-                }
-            } else {
-                Button(
-                    onClick = { if (recording) viewModel.stopRecording() else viewModel.startRecording() },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (recording) "Stop Recording" else "Start Recording")
-                }
+            Button(
+                onClick = { if (recording) viewModel.stopRecording() else viewModel.startRecording() },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (recording) "Stop Recording" else "Start Recording")
             }
         }
     }
