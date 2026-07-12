@@ -1,5 +1,9 @@
 # ppg-bp-android
 
+<p align="center">
+  <img src="docs/branding/logos/banner.svg" alt="ppg-bp-android: an arterial/PPG pulse waveform mark, a phone glyph, and the ppg-bp-android wordmark" width="500">
+</p>
+
 Native Kotlin app that records raw PPG + motion data from a Polar Verity Sense over BLE, stages it on-device, and syncs it to a self-hosted server when it can. Part of a three-repo project to track blood pressure trends from raw PPG for someone with Multiple System Atrophy (MSA).
 
 Not a medical device. Read [DISCLAIMER.md](DISCLAIMER.md) before using this for anything real.
