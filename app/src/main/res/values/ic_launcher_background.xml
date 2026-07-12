@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Adaptive icon background: brand near-black (BG_COLOR in
+         docs/branding/generate_logo.py), matches the flat launcher icon's
+         baked-in background exactly. -->
+    <color name="ic_launcher_background">#0D1210</color>
+</resources>
