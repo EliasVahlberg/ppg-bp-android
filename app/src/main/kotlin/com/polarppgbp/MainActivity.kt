@@ -72,10 +72,17 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.remember
+import com.polarppgbp.ui.BrandBackground
+import com.polarppgbp.ui.MonoReadout
+import com.polarppgbp.ui.MonoReadoutLarge
+import com.polarppgbp.ui.PpgBpTheme
+import com.polarppgbp.ui.Spacing
+import com.polarppgbp.ui.StatusColors
 
 class MainActivity : ComponentActivity() {
 
@@ -110,7 +117,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         checkAndMaybeRequestPermissions()
         setContent {
-            MaterialTheme {
+            PpgBpTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val navController = rememberNavController()
                     NavHost(navController = navController, startDestination = "recorder") {
@@ -139,12 +146,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** Coarse recorder phase derived from (recording, connectionState). */
-private enum class Phase(val label: String, val color: Color) {
-    STOPPED("Stopped", Color(0xFF546E7A)),
-    CONNECTING("Connecting…", Color(0xFFF9A825)),
-    CAPTURING("● Capturing", Color(0xFF2E7D32)),
-    RECONNECTING("Lost connection — reconnecting", Color(0xFFC62828)),
+/** Coarse recorder phase derived from (recording, connectionState). onColor
+ * picks readable text for each phase's (bright vs muted/dark) background. */
+private enum class Phase(val label: String, val color: Color, val onColor: Color) {
+    STOPPED("Stopped", StatusColors.Stopped, Color(0xFFE4EAE7)),
+    CONNECTING("Connecting…", StatusColors.Connecting, BrandBackground),
+    CAPTURING("● Capturing", StatusColors.Capturing, BrandBackground),
+    RECONNECTING("Lost connection — reconnecting", StatusColors.Reconnecting, BrandBackground),
 }
 
 private fun phaseOf(recording: Boolean, s: ConnectionState): Phase = when {
@@ -183,18 +191,18 @@ private fun RecorderScreen(
 
     Scaffold { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(20.dp),
+            modifier = Modifier.fillMaxSize().padding(padding).padding(Spacing.lg),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Polar BP Recorder", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("Polar BP Recorder", style = MaterialTheme.typography.headlineMedium)
                 IconButton(onClick = onOpenSettings, enabled = !recording) {
-                    Text("⚙", fontSize = 22.sp)
+                    Text("⚙", fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurface)
                 }
             }
 
@@ -203,43 +211,55 @@ private fun RecorderScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(150.dp)
-                    .clip(RoundedCornerShape(20.dp))
+                    .clip(MaterialTheme.shapes.large)
                     .background(phase.color)
                     .padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-                Text(phase.label, fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text(phase.label, fontSize = 26.sp, fontWeight = FontWeight.Bold, color = phase.onColor)
                 Spacer(Modifier.height(6.dp))
-                Text(detailOf(recording, connectionState), fontSize = 15.sp, color = Color.White)
+                Text(detailOf(recording, connectionState), fontSize = 15.sp, color = phase.onColor)
             }
 
             // Live sample counters.
-            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                Text("PPG ${metrics.ppgSamples}", style = MaterialTheme.typography.titleMedium)
-                Text("ACC ${metrics.accSamples}", style = MaterialTheme.typography.titleMedium)
-                Text("GYRO ${metrics.gyroSamples}", style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.lg)) {
+                Text("PPG ${metrics.ppgSamples}", style = MonoReadout, color = MaterialTheme.colorScheme.primary)
+                Text("ACC ${metrics.accSamples}", style = MonoReadout, color = MaterialTheme.colorScheme.primary)
+                Text("GYRO ${metrics.gyroSamples}", style = MonoReadout, color = MaterialTheme.colorScheme.primary)
             }
-            metrics.hr?.let { Text("HR $it bpm", style = MaterialTheme.typography.bodyMedium) }
+            metrics.hr?.let {
+                Text("HR $it bpm", style = MonoReadout, color = MaterialTheme.colorScheme.secondary)
+            }
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(Spacing.sm))
 
             // Recent sessions list.
             Text(
                 "Recent sessions",
                 style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
                 modifier = Modifier.fillMaxWidth(),
             )
             if (viewModel.sessions.isEmpty()) {
                 Text("None yet", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
             } else {
                 viewModel.sessions.take(6).forEach { s ->
-                    Text(
-                        text = "${if (s.completed) "✓" else "…"}  ${s.name}   ${"%.1f".format(s.sizeBytes / 1e6)} MB",
-                        style = MaterialTheme.typography.bodySmall,
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                    )
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = "${if (s.completed) "✓" else "…"}  ${s.name}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (s.completed) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "${"%.1f".format(s.sizeBytes / 1e6)} MB",
+                            style = MonoReadout.copy(fontSize = 13.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 
@@ -249,32 +269,36 @@ private fun RecorderScreen(
             Text(
                 "Omron cuff",
                 style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
                 modifier = Modifier.fillMaxWidth(),
             )
             Text(cuffStatus, style = MaterialTheme.typography.bodySmall)
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
             ) {
-                Button(
+                OutlinedButton(
                     onClick = { viewModel.pairCuff() },
                     enabled = viewModel.permissionsGranted && !cuffBusy && !recording,
                     modifier = Modifier.weight(1f),
                 ) { Text("Pair (hold P)") }
-                Button(
+                OutlinedButton(
                     onClick = { viewModel.readCuff() },
                     enabled = viewModel.permissionsGranted && !cuffBusy && !recording,
                     modifier = Modifier.weight(1f),
                 ) { Text("Read Cuff") }
             }
 
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(Spacing.xs))
 
             if (!viewModel.permissionsGranted) {
-                Button(onClick = onRequestPermissions) { Text("Grant Bluetooth permissions") }
+                Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
+                    Text("Grant Bluetooth permissions")
+                }
             } else {
-                Button(onClick = { if (recording) viewModel.stopRecording() else viewModel.startRecording() }) {
+                Button(
+                    onClick = { if (recording) viewModel.stopRecording() else viewModel.startRecording() },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Text(if (recording) "Stop Recording" else "Start Recording")
                 }
             }
@@ -283,11 +307,8 @@ private fun RecorderScreen(
 }
 
 /*
- * Settings screen (#1). Plain Material3 for now, deliberately undecorated —
- * the visual pass (colour palette, borders, spacing) is a separate, explicit
- * follow-up once the UI/UX look-and-feel direction is settled, so this isn't
- * built twice. The functional pieces (profile choice, per-sensor rate
- * pickers, reset) are real and write-through immediately.
+ * Settings screen (#1). Styled per the app theme (Theme.kt) — dark brand
+ * palette, JetBrains Mono for the Hz readouts, consistent Spacing scale.
  */
 @Composable
 private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
@@ -296,16 +317,16 @@ private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
 
     Scaffold { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            modifier = Modifier.fillMaxSize().padding(padding).padding(Spacing.lg),
+            verticalArrangement = Arrangement.spacedBy(Spacing.lg),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onBack) { Text("← Back") }
                 Spacer(Modifier.weight(1f))
-                Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text("Settings", style = MaterialTheme.typography.headlineSmall)
             }
 
-            Text("Recording profile", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text("Recording profile", style = MaterialTheme.typography.titleSmall)
             ProfileChoice.entries.forEach { choice ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -315,16 +336,12 @@ private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
                         selected = settings.profileChoice == choice,
                         onClick = { viewModel.setProfileChoice(choice) },
                     )
-                    Text(choice.label)
+                    Text(choice.label, style = MaterialTheme.typography.bodyLarge)
                 }
             }
 
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Per-sensor sample rate",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-            )
+            Spacer(Modifier.height(Spacing.xs))
+            Text("Per-sensor sample rate", style = MaterialTheme.typography.titleSmall)
             val customEnabled = settings.profileChoice == ProfileChoice.CUSTOM
             RateDropdown(
                 label = "PPG (Hz)",
@@ -363,9 +380,13 @@ private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
 
             Spacer(Modifier.weight(1f))
 
-            Button(
+            OutlinedButton(
                 onClick = { showResetConfirm = true },
                 modifier = Modifier.fillMaxWidth(),
+                colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error),
             ) { Text("Reset all settings") }
         }
     }
@@ -408,13 +429,24 @@ private fun RateDropdown(
             readOnly = true,
             enabled = enabled,
             label = { Text(label) },
+            textStyle = MonoReadout,
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded && enabled) },
+            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                // Read-only-but-still-informational when a fixed preset is
+                // selected (Calibration/Monitor) — should stay legible, not
+                // fade to Material3's default ~38% disabled alpha, which is
+                // hard to read against the brand's near-black surface.
+                disabledTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                disabledLabelColor = MaterialTheme.colorScheme.outline,
+                disabledBorderColor = MaterialTheme.colorScheme.outline,
+                disabledTrailingIconColor = MaterialTheme.colorScheme.outline,
+            ),
             modifier = Modifier.fillMaxWidth().menuAnchor(),
         )
         ExposedDropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
             options.forEach { hz ->
                 DropdownMenuItem(
-                    text = { Text("$hz Hz") },
+                    text = { Text("$hz Hz", style = MonoReadout) },
                     onClick = { onSelect(hz); expanded = false },
                 )
             }

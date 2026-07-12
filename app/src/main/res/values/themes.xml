@@ -1,12 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      Base app theme. Material3 doesn't ship a "DayNight.NoActionBar" out of
-      the box; we define one explicitly. This works under -Y configurations
-      (light/dark via material-3 dynamic colors when available).
+      Base app theme. The app is dark-themed unconditionally (see
+      ui/Theme.kt PpgBpTheme, built on the project's brand palette from
+      docs/branding/generate_logo.py), so the system status/nav bar icons
+      need to be light-on-dark rather than the Material default
+      light-status-bar assumption.
     -->
     <style name="Theme.PolarBpRecorder" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowBackground">#FF0D1210</item>
     </style>
 </resources>
