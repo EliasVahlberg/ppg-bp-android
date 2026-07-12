@@ -50,6 +50,11 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.polarppgbp.omron.CuffStore
 import com.polarppgbp.omron.OmronCuffClient
+import com.polarppgbp.settings.ProfileChoice
+import com.polarppgbp.settings.RecordingSettings
+import com.polarppgbp.settings.SettingsStore
+import com.polarppgbp.settings.SupportedRates
+import com.polarppgbp.rop.SensorType
 import com.polarppgbp.sync.SyncScheduler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -58,6 +63,19 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.remember
 
 class MainActivity : ComponentActivity() {
 
@@ -94,7 +112,19 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    RecorderScreen(viewModel, onRequestPermissions = { checkAndMaybeRequestPermissions() })
+                    val navController = rememberNavController()
+                    NavHost(navController = navController, startDestination = "recorder") {
+                        composable("recorder") {
+                            RecorderScreen(
+                                viewModel,
+                                onRequestPermissions = { checkAndMaybeRequestPermissions() },
+                                onOpenSettings = { navController.navigate("settings") },
+                            )
+                        }
+                        composable("settings") {
+                            SettingsScreen(viewModel, onBack = { navController.popBackStack() })
+                        }
+                    }
                 }
             }
         }
@@ -133,7 +163,11 @@ private fun detailOf(recording: Boolean, s: ConnectionState): String = when (s) 
 }
 
 @Composable
-private fun RecorderScreen(viewModel: MainViewModel, onRequestPermissions: () -> Unit) {
+private fun RecorderScreen(
+    viewModel: MainViewModel,
+    onRequestPermissions: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
     val connectionState by viewModel.connectionState.collectAsState()
     val recording by viewModel.recording.collectAsState()
     val metrics by viewModel.metrics.collectAsState()
@@ -153,7 +187,16 @@ private fun RecorderScreen(viewModel: MainViewModel, onRequestPermissions: () ->
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("Polar BP Recorder", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Polar BP Recorder", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                IconButton(onClick = onOpenSettings, enabled = !recording) {
+                    Text("⚙", fontSize = 22.sp)
+                }
+            }
 
             // Big colour-coded status box.
             Column(
@@ -239,9 +282,150 @@ private fun RecorderScreen(viewModel: MainViewModel, onRequestPermissions: () ->
     }
 }
 
+/*
+ * Settings screen (#1). Plain Material3 for now, deliberately undecorated —
+ * the visual pass (colour palette, borders, spacing) is a separate, explicit
+ * follow-up once the UI/UX look-and-feel direction is settled, so this isn't
+ * built twice. The functional pieces (profile choice, per-sensor rate
+ * pickers, reset) are real and write-through immediately.
+ */
+@Composable
+private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
+    val settings = viewModel.settings
+    var showResetConfirm by remember { mutableStateOf(false) }
+
+    Scaffold { padding ->
+        Column(
+            modifier = Modifier.fillMaxSize().padding(padding).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBack) { Text("← Back") }
+                Spacer(Modifier.weight(1f))
+                Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            }
+
+            Text("Recording profile", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            ProfileChoice.entries.forEach { choice ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    RadioButton(
+                        selected = settings.profileChoice == choice,
+                        onClick = { viewModel.setProfileChoice(choice) },
+                    )
+                    Text(choice.label)
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Per-sensor sample rate",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            val customEnabled = settings.profileChoice == ProfileChoice.CUSTOM
+            RateDropdown(
+                label = "PPG (Hz)",
+                selectedHz = if (customEnabled) settings.customPpgHz else settings.toProfile().rates[SensorType.PPG],
+                options = SupportedRates.PPG,
+                enabled = customEnabled,
+                onSelect = { viewModel.setCustomRate(SensorType.PPG, it) },
+            )
+            RateDropdown(
+                label = "ACC (Hz)",
+                selectedHz = if (customEnabled) settings.customAccHz else settings.toProfile().rates[SensorType.ACC],
+                options = SupportedRates.ACC,
+                enabled = customEnabled,
+                onSelect = { viewModel.setCustomRate(SensorType.ACC, it) },
+            )
+            RateDropdown(
+                label = "GYRO (Hz)",
+                selectedHz = if (customEnabled) settings.customGyroHz else settings.toProfile().rates[SensorType.GYRO],
+                options = SupportedRates.GYRO,
+                enabled = customEnabled,
+                onSelect = { viewModel.setCustomRate(SensorType.GYRO, it) },
+            )
+            if (!customEnabled) {
+                Text(
+                    "Select \"Custom\" above to choose individual rates.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
+            Text(
+                "A rate not supported by the connected sensor will stop recording " +
+                    "with a clear error rather than silently using a different rate.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+
+            Spacer(Modifier.weight(1f))
+
+            Button(
+                onClick = { showResetConfirm = true },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Reset all settings") }
+        }
+    }
+
+    if (showResetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirm = false },
+            title = { Text("Reset all settings?") },
+            text = { Text("This reverts the recording profile and sample rates to their defaults (Calibration). This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.resetSettingsToDefaults()
+                    showResetConfirm = false
+                }) { Text("Reset") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirm = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun RateDropdown(
+    label: String,
+    selectedHz: Int?,
+    options: List<Int>,
+    enabled: Boolean,
+    onSelect: (Int) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = expanded && enabled,
+        onExpandedChange = { if (enabled) expanded = it },
+    ) {
+        OutlinedTextField(
+            value = selectedHz?.toString() ?: "—",
+            onValueChange = {},
+            readOnly = true,
+            enabled = enabled,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded && enabled) },
+            modifier = Modifier.fillMaxWidth().menuAnchor(),
+        )
+        ExposedDropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
+            options.forEach { hz ->
+                DropdownMenuItem(
+                    text = { Text("$hz Hz") },
+                    onClick = { onSelect(hz); expanded = false },
+                )
+            }
+        }
+    }
+}
+
 class MainViewModel(application: android.app.Application) : AndroidViewModel(application) {
 
     private val context = application.applicationContext
+    private val settingsStore = SettingsStore(context)
 
     val connectionState: StateFlow<ConnectionState>
     val metrics: StateFlow<LiveMetrics>
@@ -249,6 +433,9 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
 
     var permissionsGranted: Boolean by mutableStateOf(false)
     var sessions: List<PolarRepository.SessionInfo> by mutableStateOf(emptyList())
+        private set
+
+    var settings: RecordingSettings by mutableStateOf(settingsStore.get())
         private set
 
     private val _cuffStatus = MutableStateFlow("Cuff: idle")
@@ -277,6 +464,28 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
     fun stopRecording() {
         val intent = Intent(context, RecordingService::class.java).apply { action = "STOP" }
         context.startService(intent)
+    }
+
+    // ---- settings (#1) ----
+    // Write-through: every setter persists immediately via SettingsStore, then
+    // refreshes the in-memory `settings` so the UI recomposes. The debug
+    // broadcast receiver calls these same functions rather than duplicating
+    // the persistence logic, so a debug command is always equivalent to the
+    // matching user action.
+
+    fun setProfileChoice(choice: ProfileChoice) {
+        settingsStore.setProfileChoice(choice)
+        settings = settingsStore.get()
+    }
+
+    fun setCustomRate(sensor: SensorType, hz: Int) {
+        settingsStore.setCustomRate(sensor, hz)
+        settings = settingsStore.get()
+    }
+
+    fun resetSettingsToDefaults() {
+        settingsStore.resetToDefaults()
+        settings = settingsStore.get()
     }
 
     /** Pair (first time, cuff held in -P- mode) then read. Reprograms the key. */

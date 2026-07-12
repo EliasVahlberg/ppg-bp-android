@@ -154,8 +154,32 @@ class Device:
     def start_recording(self, profile: str = "calibration") -> None:
         self.broadcast("START_RECORDING", {"profile": profile})
 
+    def start_recording_from_settings(self) -> None:
+        """START_RECORDING with no profile override — exercises the same
+        path a real tap of the in-app Start button takes (resolves via
+        SettingsStore), rather than the deterministic calibration/monitor
+        override used by start_recording()."""
+        self.broadcast("START_RECORDING")
+
     def stop_recording(self) -> None:
         self.broadcast("STOP_RECORDING")
+
+    def get_settings(self) -> str:
+        """Send GET_SETTINGS and return the freshest DebugCmd log line."""
+        self.clear_log()
+        self.broadcast("GET_SETTINGS")
+        return self.wait_for_log(r"DebugCmd: GET_SETTINGS", timeout=10.0)
+
+    def set_profile(self, profile: str) -> None:
+        """profile: 'calibration' | 'monitor' | 'custom'."""
+        self.broadcast("SET_PROFILE", {"profile": profile})
+
+    def set_rate(self, sensor: str, hz: int) -> None:
+        """sensor: 'PPG' | 'ACC' | 'GYRO'."""
+        self.broadcast("SET_RATE", {"sensor": sensor, "hz": str(hz)})
+
+    def reset_settings(self) -> None:
+        self.broadcast("RESET_SETTINGS")
 
     def sync_now(self) -> None:
         self.broadcast("SYNC_NOW")

@@ -10,6 +10,10 @@
  *       --es profile calibration --es device_id AABBCCDD
  *   adb shell am broadcast -a com.polarppgbp.debug.STOP_RECORDING
  *   adb shell am broadcast -a com.polarppgbp.debug.STATUS
+ *   adb shell am broadcast -a com.polarppgbp.debug.GET_SETTINGS
+ *   adb shell am broadcast -a com.polarppgbp.debug.SET_PROFILE --es profile custom
+ *   adb shell am broadcast -a com.polarppgbp.debug.SET_RATE --es sensor PPG --es hz 135
+ *   adb shell am broadcast -a com.polarppgbp.debug.RESET_SETTINGS
  *
  * Results are logged under the "DebugCmd" tag:
  *   adb logcat -d -s DebugCmd
@@ -28,6 +32,9 @@ import com.polarppgbp.PREFS_NAME
 import com.polarppgbp.RecordingService
 import com.polarppgbp.SharedRepo
 import com.polarppgbp.omron.OmronCuffClient
+import com.polarppgbp.rop.SensorType
+import com.polarppgbp.settings.ProfileChoice
+import com.polarppgbp.settings.SettingsStore
 import com.polarppgbp.sync.SyncScheduler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,7 +48,13 @@ class DebugCommandReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             ACTION_START -> {
-                val profile = intent.getStringExtra("profile") ?: "calibration"
+                // Mirrors MainViewModel.startRecording(): if no explicit
+                // `profile` extra is given, don't force one — let
+                // RecordingService resolve from SettingsStore, exactly like
+                // tapping the real Start button would. `profile` here is an
+                // explicit *override*, for scripting/e2e convenience, not
+                // the default path.
+                val profileOverride = intent.getStringExtra("profile")
                 val deviceId = intent.getStringExtra("device_id")
                 if (deviceId != null) {
                     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -49,10 +62,10 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 }
                 val svc = Intent(context, RecordingService::class.java).apply {
                     action = "START"
-                    putExtra("PROFILE", profile)
+                    if (profileOverride != null) putExtra("PROFILE", profileOverride)
                 }
                 context.startForegroundService(svc)
-                Log.i(TAG, "START_RECORDING profile=$profile device_id=${deviceId ?: "(pref)"}")
+                Log.i(TAG, "START_RECORDING profile=${profileOverride ?: "(from settings)"} device_id=${deviceId ?: "(pref)"}")
             }
 
             ACTION_STOP -> {
@@ -87,6 +100,54 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 val n = SyncScheduler.enqueueAllUnsynced(context, root)
                 SyncScheduler.enqueueCuff(context)
                 Log.i(TAG, "SYNC_NOW enqueued=$n sessions + cuff from ${root.absolutePath}")
+            }
+
+            // ---- settings (#1) ----
+            // These call the exact same SettingsStore methods the Settings
+            // screen's onClick/onSelect handlers call (via MainViewModel) —
+            // a debug command is a scripted equivalent of the user action,
+            // not a separate code path, so this stays true if either side
+            // changes later.
+
+            ACTION_GET_SETTINGS -> {
+                val s = SettingsStore(context).get()
+                Log.i(
+                    TAG,
+                    "GET_SETTINGS profile=${s.profileChoice.storageName} " +
+                        "ppg=${s.customPpgHz} acc=${s.customAccHz} gyro=${s.customGyroHz} " +
+                        "resolved=${s.toProfile().rates}",
+                )
+            }
+
+            ACTION_SET_PROFILE -> {
+                val name = intent.getStringExtra("profile")
+                val choice = ProfileChoice.entries.firstOrNull { it.storageName == name }
+                if (choice == null) {
+                    Log.w(TAG, "SET_PROFILE: unknown profile '$name', expected one of " +
+                        ProfileChoice.entries.joinToString { it.storageName })
+                } else {
+                    SettingsStore(context).setProfileChoice(choice)
+                    Log.i(TAG, "SET_PROFILE profile=${choice.storageName}")
+                }
+            }
+
+            ACTION_SET_RATE -> {
+                val sensorName = intent.getStringExtra("sensor")
+                val hz = intent.getStringExtra("hz")?.toIntOrNull()
+                val sensor = sensorName?.uppercase()?.let { n ->
+                    runCatching { SensorType.valueOf(n) }.getOrNull()
+                }
+                if (sensor == null || hz == null) {
+                    Log.w(TAG, "SET_RATE: need --es sensor PPG|ACC|GYRO --es hz <int>, got sensor=$sensorName hz=$hz")
+                } else {
+                    SettingsStore(context).setCustomRate(sensor, hz)
+                    Log.i(TAG, "SET_RATE sensor=$sensor hz=$hz")
+                }
+            }
+
+            ACTION_RESET_SETTINGS -> {
+                SettingsStore(context).resetToDefaults()
+                Log.i(TAG, "RESET_SETTINGS -> ${SettingsStore(context).get()}")
             }
 
             ACTION_READ_CUFF, ACTION_PAIR_CUFF -> {
@@ -132,5 +193,9 @@ class DebugCommandReceiver : BroadcastReceiver() {
         const val ACTION_SYNC_NOW = "com.polarppgbp.debug.SYNC_NOW"
         const val ACTION_READ_CUFF = "com.polarppgbp.debug.READ_CUFF"
         const val ACTION_PAIR_CUFF = "com.polarppgbp.debug.PAIR_CUFF"
+        const val ACTION_GET_SETTINGS = "com.polarppgbp.debug.GET_SETTINGS"
+        const val ACTION_SET_PROFILE = "com.polarppgbp.debug.SET_PROFILE"
+        const val ACTION_SET_RATE = "com.polarppgbp.debug.SET_RATE"
+        const val ACTION_RESET_SETTINGS = "com.polarppgbp.debug.RESET_SETTINGS"
     }
 }

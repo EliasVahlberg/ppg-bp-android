@@ -77,6 +77,12 @@ data class LiveMetrics(
     val gyroSamples: Long = 0,
 )
 
+/** Thrown by chooseSetting() when a requested sample rate isn't offered by
+ * the connected device (#1: configuration errors should fail loudly, not
+ * silently fall back to a different rate). */
+class UnsupportedRateException(val requestedHz: Int, val availableHz: Set<Int>) :
+    Exception("requested ${requestedHz}Hz not in $availableHz")
+
 class PolarRepository(context: Context) {
 
     private val appContext = context.applicationContext
@@ -329,6 +335,17 @@ class PolarRepository(context: Context) {
                     break
                 } catch (e: CancellationException) {
                     throw e
+                } catch (e: UnsupportedRateException) {
+                    // Configuration error, not a transient BLE glitch — retrying
+                    // won't help, the device's supported rates aren't changing.
+                    // Fail loudly and stop the whole session rather than silently
+                    // leaving this sensor MISSING while others keep recording.
+                    Log.e(TAG, "$name: unsupported rate requested: ${e.message}")
+                    _connectionState.value = ConnectionState.Failed(
+                        "Unsupported $name rate: ${e.requestedHz}Hz not in ${e.availableHz}",
+                    )
+                    disconnect()
+                    break
                 } catch (e: Exception) {
                     attempt++
                     Log.e(TAG, "$name stream failed (attempt $attempt/$maxAttempts): ${e.message}", e)
@@ -342,23 +359,27 @@ class PolarRepository(context: Context) {
         }
 
     /**
-     * Pick a sensor setting requesting [targetRate] for SAMPLE_RATE (falling
-     * back to the max available) and the max of every other available key.
-     * Returns the setting plus the rate actually selected (for the ROP header).
+     * Pick a sensor setting requesting [targetRate] for SAMPLE_RATE and the
+     * max of every other available key.
+     *
+     * Per #1's acceptance criteria, an unsupported target rate is now a hard
+     * failure (throws UnsupportedRateException) rather than a silent
+     * fallback to the device's max available rate — a user who explicitly
+     * configured e.g. 176Hz PPG should find out immediately if that's not
+     * achievable on the connected device, not discover a lower rate was
+     * used only after the fact.
      */
     private fun chooseSetting(available: PolarSensorSetting, targetRate: Int): Pair<PolarSensorSetting, Int> {
         val rates = available.settings[SettingType.SAMPLE_RATE].orEmpty()
-        val chosenRate = when {
-            rates.isEmpty() -> targetRate
-            rates.contains(targetRate) -> targetRate
-            else -> rates.maxOrNull() ?: targetRate
+        if (rates.isNotEmpty() && !rates.contains(targetRate)) {
+            throw UnsupportedRateException(targetRate, rates)
         }
         val selected = HashMap<SettingType, Int>()
         for ((key, values) in available.settings) {
-            selected[key] = if (key == SettingType.SAMPLE_RATE) chosenRate else (values.maxOrNull() ?: continue)
+            selected[key] = if (key == SettingType.SAMPLE_RATE) targetRate else (values.maxOrNull() ?: continue)
         }
-        if (!selected.containsKey(SettingType.SAMPLE_RATE)) selected[SettingType.SAMPLE_RATE] = chosenRate
-        return PolarSensorSetting(selected) to chosenRate
+        if (!selected.containsKey(SettingType.SAMPLE_RATE)) selected[SettingType.SAMPLE_RATE] = targetRate
+        return PolarSensorSetting(selected) to targetRate
     }
 
     private fun startHrStream(deviceId: String) {

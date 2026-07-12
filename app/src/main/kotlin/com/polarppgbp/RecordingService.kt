@@ -89,9 +89,14 @@ class RecordingService : Service() {
                 }
                 SharedRepo.manualStop = false
                 startForeground(NOTIF_ID, createNotification(ConnectionState.Idle, null))
-                val profileName = intent.getStringExtra("PROFILE") ?: "calibration"
-                SharedRepo.repo?.startSession(Profile.byName(profileName))
-                Log.i(TAG, "Auto-connecting to device: $lastDeviceId (profile=$profileName)")
+                val profileOverride = intent.getStringExtra("PROFILE")
+                val profile = if (profileOverride != null) {
+                    Profile.byName(profileOverride)
+                } else {
+                    com.polarppgbp.settings.SettingsStore(this).get().toProfile()
+                }
+                SharedRepo.repo?.startSession(profile)
+                Log.i(TAG, "Auto-connecting to device: $lastDeviceId (profile=${profile.name})")
                 SharedRepo.deviceId = lastDeviceId
                 SharedRepo.repo?.connect(lastDeviceId)
                 startHeartbeat()
