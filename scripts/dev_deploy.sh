@@ -79,7 +79,7 @@ fi
 "$ADB" "${ADB_ARGS[@]}" devices
 
 echo "==> Building debug APK"
-./gradlew :app:assembleDebug --console=plain
+timeout 5m ./gradlew :app:assembleDebug --console=plain -q
 
 if [[ ! -f "$APK_PATH" ]]; then
     echo "Build did not produce $APK_PATH" >&2
