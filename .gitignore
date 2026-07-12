@@ -11,3 +11,11 @@ captures/
 *.aab
 *.dex
 .cxx/
+
+# tests_e2e (Python, device-in-the-loop suite)
+tests_e2e/.env
+tests_e2e/.venv/
+tests_e2e/__pycache__/
+tests_e2e/e2e/__pycache__/
+tests_e2e/.pytest_cache/
+
