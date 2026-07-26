@@ -33,7 +33,7 @@ class E2EConfig:
     adb_serial: str | None  # None = use whichever single device is connected
     adb_path: str
     apk_path: str | None  # path to a prebuilt app-debug.apk; None = assume already installed
-    polar_device_id: str | None  # e.g. "156AC536", for assertions only (never required to connect)
+    polar_device_id: str | None  # e.g. "ABCD1234", for assertions only (never required to connect)
     server_url: str | None
     server_token: str | None
 
