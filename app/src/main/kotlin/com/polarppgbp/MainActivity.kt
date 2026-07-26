@@ -49,6 +49,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.polarppgbp.omron.CuffClockObservation
+import com.polarppgbp.omron.CuffClockRepair
 import com.polarppgbp.omron.CuffStore
 import com.polarppgbp.omron.OmronCuffClient
 import com.polarppgbp.settings.ProfileChoice
@@ -365,6 +366,51 @@ private fun RecorderScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             Text(cuffStatus, style = MaterialTheme.typography.bodySmall)
+
+            // #18: a halted RTC cannot be fixed from the cuff itself, so offer the only
+            // recovery route -- but never write without asking.
+            val haltedClock by viewModel.cuffClockHalted.collectAsState()
+            haltedClock?.let { clock ->
+                var confirming by remember { mutableStateOf(false) }
+                Text(
+                    "⚠ Cuff clock has stopped (frozen at ${clock.cuffIso}). New readings cannot " +
+                        "be matched to a recording until it is set.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                OutlinedButton(
+                    onClick = { confirming = true },
+                    enabled = viewModel.permissionsGranted && !cuffBusy && !recording,
+                ) { Text("Set cuff clock") }
+
+                if (confirming) {
+                    val proposed = viewModel.proposedClockIso()
+                    AlertDialog(
+                        onDismissRequest = { confirming = false },
+                        title = { Text("Set the cuff's clock?") },
+                        text = {
+                            Text(
+                                "This writes to the cuff — the only write this app performs.\n\n" +
+                                    "Cuff now: ${clock.cuffIso} (stopped)\n" +
+                                    "Will write: $proposed\n\n" +
+                                    "Stored readings are not touched. Their timestamps stay as " +
+                                    "recorded, so nothing already synced is affected.\n\n" +
+                                    "The cuff may need a second press of its transfer button to " +
+                                    "confirm the clock is running.",
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                confirming = false
+                                viewModel.repairCuffClock()
+                            }) { Text("Write clock") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { confirming = false }) { Text("Cancel") }
+                        },
+                    )
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(Spacing.md),
@@ -815,6 +861,43 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
     }
 
     /** Pair (first time, cuff held in -P- mode) then read. Reprograms the key. */
+    /**
+     * Set when the last cuff read found a halted RTC (#18). The Evolv has no clock UI
+     * and no button path to set the time, so the user cannot fix this without the app --
+     * but the write still requires their confirmation, since it is the only write this
+     * app performs.
+     */
+    private val _cuffClockHalted = MutableStateFlow<CuffClockObservation?>(null)
+    val cuffClockHalted: StateFlow<CuffClockObservation?> = _cuffClockHalted
+
+    /** What the repair would write, sampled fresh so the dialog shows the real value. */
+    fun proposedClockIso(): String =
+        java.time.LocalDateTime.now().format(
+            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"),
+        )
+
+    /**
+     * Write the cuff clock after explicit confirmation, then verify it is advancing.
+     * Takes two connections, so the cuff's transfer button may need a second press.
+     */
+    fun repairCuffClock() {
+        if (_cuffBusy.value) return
+        _cuffBusy.value = true
+        _cuffStatus.value = "Cuff: setting the clock…"
+        viewModelScope.launch {
+            try {
+                val client = OmronCuffClient(context, onStatus = { _cuffStatus.value = "Cuff: $it" })
+                val report = withContext(Dispatchers.IO) { client.repairCuffClock(null) }
+                _cuffStatus.value = "Cuff: ${report.detail}"
+                if (report.succeeded) _cuffClockHalted.value = null
+            } catch (e: Exception) {
+                _cuffStatus.value = "Cuff clock repair failed: ${e.message}"
+            } finally {
+                _cuffBusy.value = false
+            }
+        }
+    }
+
     fun pairCuff() = runCuff(pair = true)
 
     /** Routine read using the existing bond (cuff just needs to be advertising). */
@@ -846,6 +929,8 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
                 }
                 val quarantineNote =
                     if (res.quarantinedCount > 0) " · ${res.quarantinedCount} quarantined" else ""
+                _cuffClockHalted.value =
+                    if (CuffClockRepair.needed(result.clock)) result.clock else null
                 _cuffStatus.value =
                     "Cuff: ${readings.size} read · ${res.newCount} new · ${res.total} stored" +
                         quarantineNote + clockNote

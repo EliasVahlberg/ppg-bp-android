@@ -319,6 +319,30 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 }
             }
 
+            ACTION_REPAIR_CUFF_CLOCK -> {
+                // #18 hardware verification without driving the UI. `force` writes even
+                // when the clock is not halted, which is how the write-and-verify
+                // mechanics can be exercised on a working cuff.
+                val force = intent.getBooleanExtra("force", false)
+                val pending = goAsync()
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val client = OmronCuffClient(
+                            context.applicationContext,
+                            onStatus = { Log.i(TAG, "cuff: $it") },
+                        )
+                        val report = client.repairCuffClock(force = force)
+                        Log.i(TAG, "REPAIR outcome=${report.outcome} succeeded=${report.succeeded}")
+                        Log.i(TAG, "  wrote=${report.wroteIso} verified=${report.verifiedIso} offset=${report.verifiedOffsetSeconds}")
+                        Log.i(TAG, "  detail=${report.detail}")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "REPAIR failed: ${e.message}", e)
+                    } finally {
+                        pending.finish()
+                    }
+                }
+            }
+
             ACTION_CHECK_SERVER -> {
                 // #16: run the same staged health check the Settings button runs, so the
                 // stage classification can be verified without driving the UI.
@@ -349,6 +373,7 @@ class DebugCommandReceiver : BroadcastReceiver() {
         const val ACTION_SET_SERVER = "com.polarppgbp.debug.SET_SERVER"
         const val ACTION_SYNC_NOW = "com.polarppgbp.debug.SYNC_NOW"
         const val ACTION_READ_CUFF = "com.polarppgbp.debug.READ_CUFF"
+        const val ACTION_REPAIR_CUFF_CLOCK = "com.polarppgbp.debug.REPAIR_CUFF_CLOCK"
         const val ACTION_CHECK_SERVER = "com.polarppgbp.debug.CHECK_SERVER"
         const val ACTION_READ_CUFF_SETTINGS = "com.polarppgbp.debug.READ_CUFF_SETTINGS"
         const val ACTION_WRITE_CUFF_TIME = "com.polarppgbp.debug.WRITE_CUFF_TIME"

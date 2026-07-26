@@ -230,6 +230,80 @@ class OmronCuffClient(
         }
     }
 
+    /**
+     * Read only the cuff's clock, in its own connection. Used to verify a clock write
+     * after the fact: settings writes stage and commit at end-of-transmission, so the
+     * live value cannot be verified inside the writing session (verified on hardware
+     * 2026-07-26).
+     */
+    suspend fun observeCuffClock(deviceAddress: String? = null): CuffClockObservation {
+        val device = resolveDevice(deviceAddress)
+        onStatus("Connecting to ${device.address} to read the clock")
+        try {
+            connect(device)
+            discover()
+            enableNotify(OmronProtocol.RX_CHANNEL_UUIDS[0])
+            waitForBonded()
+            enableNotify(OmronProtocol.UNLOCK_UUID)
+            unlock()
+            enableRemainingRxNotifications()
+            startTransmission()
+            val clock = observeClock()
+            endTransmission()
+            return clock
+        } finally {
+            close()
+        }
+    }
+
+    /**
+     * Write the cuff clock and then prove it is actually running (#18).
+     *
+     * The verification is a separate connection taken [CuffClockRepair.SETTLE_MS] after
+     * the write, which is what makes a single read sufficient: a clock frozen at the
+     * written value would by now be behind the phone by the settle time, so continued
+     * agreement can only mean the RTC is ticking.
+     *
+     * Never throws. Every failure path returns a report naming the stage, because the
+     * point of the guard is that a failed repair leaves the device no worse than before
+     * and says so.
+     */
+    suspend fun repairCuffClock(
+        deviceAddress: String? = null,
+        force: Boolean = false,
+        settleMs: Long = CuffClockRepair.SETTLE_MS,
+    ): RepairReport {
+        var wroteIso: String? = null
+        val writeStart: Long
+        try {
+            val result = writeCuffClock(deviceAddress, setpoint = null, force = force)
+            wroteIso = OmronProtocol.parseTimeSync(result.payload).iso()
+            writeStart = System.currentTimeMillis()
+        } catch (e: Exception) {
+            Log.w(TAG, "clock repair: write stage failed: ${e.message}")
+            return CuffClockRepair.classify(null, null, 0, writeError = e.message ?: "unknown error")
+        }
+
+        val remaining = settleMs - (System.currentTimeMillis() - writeStart)
+        if (remaining > 0) {
+            onStatus("Waiting ${remaining / 1000}s to check the clock is advancing…")
+            kotlinx.coroutines.delay(remaining)
+        }
+
+        val verification = try {
+            observeCuffClock(deviceAddress)
+        } catch (e: Exception) {
+            // Very likely the cuff went back to sleep: recoverable, and not a failed write.
+            Log.w(TAG, "clock repair: verification read failed: ${e.message}")
+            null
+        }
+        val elapsed = System.currentTimeMillis() - writeStart
+        return CuffClockRepair.classify(wroteIso, verification, elapsed).also {
+            onStatus(it.detail)
+            Log.i(TAG, "clock repair: ${it.outcome} — ${it.detail}")
+        }
+    }
+
     /** Explicit clock setpoint. Omit to use the phone clock sampled at write time. */
     data class ClockSetpoint(
         val year: Int,
