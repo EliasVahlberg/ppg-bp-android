@@ -128,4 +128,7 @@ dependencies {
 
     // JVM unit tests (ROP writer golden-bytes contract test — no Android deps).
     testImplementation("junit:junit:4.13.2")
+    // Real org.json for unit tests: the android.jar stub throws "not mocked", which
+    // silently turned a parsed server version into null (#16).
+    testImplementation("org.json:json:20240303")
 }

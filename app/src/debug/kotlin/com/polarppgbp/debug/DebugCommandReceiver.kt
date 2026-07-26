@@ -312,6 +312,25 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 }
             }
 
+            ACTION_CHECK_SERVER -> {
+                // #16: run the same staged health check the Settings button runs, so the
+                // stage classification can be verified without driving the UI.
+                val pending = goAsync()
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val report = com.polarppgbp.sync.ServerHealth.check(context.applicationContext)
+                        Log.i(TAG, "CHECK_SERVER stage=${report.stage} ok=${report.ok}")
+                        Log.i(TAG, "  url=${report.url} version=${report.serverVersion} " +
+                            "compatible=${report.versionCompatible}")
+                        Log.i(TAG, "  detail=${report.detail}")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "CHECK_SERVER failed: ${e.message}", e)
+                    } finally {
+                        pending.finish()
+                    }
+                }
+            }
+
             else -> Log.w(TAG, "Unknown action: ${intent.action}")
         }
     }
@@ -323,6 +342,7 @@ class DebugCommandReceiver : BroadcastReceiver() {
         const val ACTION_SET_SERVER = "com.polarppgbp.debug.SET_SERVER"
         const val ACTION_SYNC_NOW = "com.polarppgbp.debug.SYNC_NOW"
         const val ACTION_READ_CUFF = "com.polarppgbp.debug.READ_CUFF"
+        const val ACTION_CHECK_SERVER = "com.polarppgbp.debug.CHECK_SERVER"
         const val ACTION_READ_CUFF_SETTINGS = "com.polarppgbp.debug.READ_CUFF_SETTINGS"
         const val ACTION_WRITE_CUFF_TIME = "com.polarppgbp.debug.WRITE_CUFF_TIME"
         const val ACTION_PAIR_CUFF = "com.polarppgbp.debug.PAIR_CUFF"

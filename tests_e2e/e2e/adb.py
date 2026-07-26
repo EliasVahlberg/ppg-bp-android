@@ -248,6 +248,16 @@ class Device:
     def set_server(self, url: str, token: str) -> None:
         self.broadcast("SET_SERVER", {"url": url, "token": token})
 
+    def check_server(self, *, timeout: float = 25.0) -> str:
+        """Run the in-app staged server health check (#16) and return its report line.
+
+        Uses the debug broadcast rather than driving the settings UI: the check itself
+        is the same code path the "Test connection" button calls.
+        """
+        self.clear_log()
+        self.broadcast("CHECK_SERVER")
+        return self.wait_for_log(r"DebugCmd: CHECK_SERVER stage=\w+", timeout=timeout)
+
     def set_bluetooth(self, enabled: bool) -> None:
         """Toggle the Bluetooth adapter.
 

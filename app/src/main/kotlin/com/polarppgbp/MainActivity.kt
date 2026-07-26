@@ -56,6 +56,9 @@ import com.polarppgbp.settings.ServerConfig
 import com.polarppgbp.settings.ServerConfigResult
 import com.polarppgbp.settings.SettingsStore
 import com.polarppgbp.settings.SupportedRates
+import com.polarppgbp.sync.ServerHealth
+import com.polarppgbp.sync.HealthStage
+import com.polarppgbp.sync.HealthReport
 import com.polarppgbp.rop.SensorType
 import com.polarppgbp.sync.SyncScheduler
 import kotlinx.coroutines.Dispatchers
@@ -197,6 +200,9 @@ class MainActivity : ComponentActivity() {
         // Bluetooth switched off while backgrounded must surface now, not at the next
         // failed connection attempt.
         viewModel.refreshBlocker()
+        // Server config can change outside the ViewModel (debug broadcast, or a return
+        // from another screen), so re-read it rather than trusting cached state.
+        viewModel.refreshServerState()
         viewModel.refreshSessions()
     }
 }
@@ -503,6 +509,26 @@ private fun ServerSection(viewModel: MainViewModel) {
             ) { Text("Clear") }
         }
     }
+
+    // #16: on-demand only. A failed check warns but never blocks saving -- the phone
+    // may legitimately be configured while away from the server's network.
+    OutlinedButton(
+        onClick = { viewModel.checkServerHealth() },
+        enabled = viewModel.serverConfigured && !viewModel.serverHealthRunning,
+        modifier = Modifier.fillMaxWidth(),
+    ) { Text(if (viewModel.serverHealthRunning) "Testing…" else "Test connection") }
+
+    viewModel.serverHealth?.let { report ->
+        Text(
+            report.detail,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (report.ok) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.error
+            },
+        )
+    }
 }
 
 @Composable
@@ -717,10 +743,36 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         refreshServerState()
     }
 
-    private fun refreshServerState() {
+    /** #16: last health-check result, null until the user runs one. */
+    var serverHealth: HealthReport? by mutableStateOf(null)
+        private set
+    var serverHealthRunning: Boolean by mutableStateOf(false)
+        private set
+
+    fun checkServerHealth() {
+        if (serverHealthRunning) return
+        serverHealthRunning = true
+        viewModelScope.launch {
+            serverHealth = try {
+                ServerHealth.check(context)
+            } catch (e: Exception) {
+                // The check itself must never take the app down.
+                HealthReport(
+                    stage = HealthStage.UNREACHABLE,
+                    url = serverUrl,
+                    detail = "Check failed: ${e.message ?: e.javaClass.simpleName}",
+                )
+            }
+            serverHealthRunning = false
+        }
+    }
+
+    fun refreshServerState() {
         serverUrl = settingsStore.getServerUrl()
         serverToken = settingsStore.getServerToken()
         serverConfigured = settingsStore.isServerConfigured()
+        // A result for the previous address would be actively misleading.
+        serverHealth = null
     }
 
     fun startRecording() {

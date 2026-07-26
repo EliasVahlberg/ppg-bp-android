@@ -264,3 +264,43 @@ def test_recording_survives_and_resumes_after_bluetooth_outage(clean_log: Device
         device.wait_for_bluetooth(True)
         device.stop_recording()
         _settle_bluetooth_stack()
+
+
+@pytest.mark.e2e
+def test_server_health_check_names_the_failing_stage(clean_log: Device, e2e_config: E2EConfig):
+    """#16: a wrong address and a wrong token must not look the same to the user.
+
+    Skipped if E2E_SERVER_URL/E2E_SERVER_TOKEN aren't set, and the AUTHENTICATED case
+    additionally needs the server actually running.
+
+    Restores the configured server in a finally block, since it rewrites app prefs.
+    """
+    device = clean_log
+    if not e2e_config.server_url or not e2e_config.server_token:
+        pytest.skip("E2E_SERVER_URL/E2E_SERVER_TOKEN not set in .env — see .env.example")
+
+    try:
+        # Wrong port: nothing listening, so this must read as an address problem.
+        device.set_server("http://192.0.2.1:9", e2e_config.server_token)
+        time.sleep(1)
+        log = device.check_server()
+        assert "stage=UNREACHABLE" in log, f"expected UNREACHABLE, got:\n{log}"
+
+        # Right address, wrong token: must be reported as a token problem, and must say
+        # the address is fine so the user does not go re-typing the host.
+        device.set_server(e2e_config.server_url, "0" * 64)
+        time.sleep(1)
+        log = device.check_server()
+        assert "stage=REACHABLE" in log, f"expected REACHABLE (token rejected), got:\n{log}"
+        detail = device.log_snapshot(tag_filter="DebugCmd")
+        assert "address is right" in detail, f"should absolve the address:\n{detail}"
+
+        # Correct config: fully healthy.
+        device.set_server(e2e_config.server_url, e2e_config.server_token)
+        time.sleep(1)
+        log = device.check_server()
+        assert "stage=AUTHENTICATED" in log and "ok=true" in log, (
+            f"expected AUTHENTICATED with the real config, got:\n{log}"
+        )
+    finally:
+        device.set_server(e2e_config.server_url, e2e_config.server_token)
