@@ -4,7 +4,7 @@
   <img src="docs/branding/logos/banner.svg" alt="ppg-bp-android: an arterial/PPG pulse waveform mark, a phone glyph, and the ppg-bp-android wordmark" width="500">
 </p>
 
-Native Kotlin app that records raw PPG + motion data from a Polar Verity Sense over BLE, stages it on-device, and syncs it to a self-hosted server when it can. Part of a three-repo project to track blood pressure trends from raw PPG for someone with Multiple System Atrophy (MSA).
+Native Kotlin app that records raw PPG + motion data from a Polar Verity Sense over BLE, stages it on-device, and syncs it to a self-hosted server when it can. Part of a three-repo project for estimating blood pressure trends from raw PPG in cases that need per-person calibration, such as the autonomic BP instability seen in Multiple System Atrophy (MSA).
 
 Not a medical device. Read [DISCLAIMER.md](DISCLAIMER.md) before using this for anything real.
 
@@ -75,9 +75,18 @@ Logs: `adb logcat -s PolarRepo SyncWorker CuffSyncWorker DebugCmd`
 | Foreground-notification UX | In progress. Polish pending. |
 | Automatic posture tagging from accelerometer | Not started. Data is captured; tagging isn't wired up in the app yet. |
 
-## Requirements
+## Required hardware
 
-Android 13+ (`minSdk 33`, required by the Polar BLE SDK 7.0+), a Polar Verity Sense, and a server to sync to (see [ppg-bp-server](https://github.com/EliasVahlberg/ppg-bp-server)).
+This app targets specific devices. Used as-is, with no code changes, you need all of the following:
+
+| Item | Model | Why this specific one |
+|---|---|---|
+| PPG sensor | **Polar Verity Sense** | The only sensor the capture path targets: 176 Hz, 22-bit, 4-channel raw PPG plus 416 Hz ACC/GYRO over the Polar BLE SDK. Other Polar devices (H10, OH1) speak the same PMD protocol and may partly work, but are untested here. |
+| BP cuff | **Omron Evolv (HEM-7600T / BP7000)** | Calibration reference. Its BLE protocol is reverse-engineered and model-specific — other Omron models use different EEPROM layouts and record encodings, and will not work unmodified. |
+| Phone | **Android 13+** (`minSdk 33`) with BLE | Required by Polar BLE SDK 7.0+. Developed and tested against a OnePlus 9 Pro on Android 14 (API 34). |
+| Server | A machine on your network | Sync target. Sizing and specs: [ppg-bp-server](https://github.com/EliasVahlberg/ppg-bp-server#hardware-and-sizing). |
+
+A cuff is not optional for BP estimation. PPG gives you waveform morphology, not pressure — without paired cuff readings there is nothing to calibrate against, and the app will only ever be a raw-signal recorder.
 
 ## Building
 
