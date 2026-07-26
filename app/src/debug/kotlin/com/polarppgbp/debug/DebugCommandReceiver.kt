@@ -166,7 +166,11 @@ class DebugCommandReceiver : BroadcastReceiver() {
                         Log.i(TAG, "${intent.action}: ${readings.size} on cuff, ${res.newCount} new, ${res.total} stored total")
                         Log.i(TAG, "  stored at ${res.path}")
                         SyncScheduler.enqueueCuff(context.applicationContext)
-                        readings.takeLast(12).forEach { r ->
+                        // Sort before taking the tail: decodeRegion() returns
+                        // records in ring-buffer *slot* order, not chronological
+                        // order, so a bare takeLast() prints arbitrary slots
+                        // while implying they are the most recent readings.
+                        readings.sortedBy { it.takenAtIso() }.takeLast(12).forEach { r ->
                             Log.i(
                                 TAG,
                                 "  ${r.takenAtIso()}  ${r.sysMmHg}/${r.diaMmHg} mmHg  " +
@@ -175,6 +179,58 @@ class DebugCommandReceiver : BroadcastReceiver() {
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "${intent.action} failed: ${e.message}", e)
+                    } finally {
+                        pending.finish()
+                    }
+                }
+            }
+
+            ACTION_READ_CUFF_SETTINGS -> {
+                // Hardware probe for #9 (cuff clock) and #10 (unread counter).
+                // Dumps the settings region raw, annotated with the offset
+                // ranges we believe are meaningful, so the real byte layout can
+                // be confirmed before either issue is implemented. Read-only.
+                val address = intent.getStringExtra("address")
+                val pending = goAsync()
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val client = OmronCuffClient(
+                            context.applicationContext,
+                            onStatus = { Log.i(TAG, "cuff: $it") },
+                        )
+                        val region = client.readSettingsRegion(address)
+                        val base = com.polarppgbp.omron.OmronProtocol.SETTINGS_READ_ADDR
+                        Log.i(TAG, "READ_CUFF_SETTINGS: ${region.size} bytes @ 0x%04X".format(base))
+                        region.toList().chunked(16).forEachIndexed { row, chunk ->
+                            val off = row * 16
+                            Log.i(
+                                TAG,
+                                "  +0x%02X (0x%04X): %s".format(
+                                    off, base + off,
+                                    chunk.joinToString(" ") { "%02X".format(it) },
+                                ),
+                            )
+                        }
+                        val phoneNow = System.currentTimeMillis()
+                        Log.i(TAG, "  phone time at read: $phoneNow (${java.util.Date(phoneNow)})")
+                        fun slice(range: Pair<Int, Int>, label: String) {
+                            val (from, to) = range
+                            if (to > region.size) {
+                                Log.w(TAG, "  $label: region too short (${region.size} bytes, need $to)")
+                                return
+                            }
+                            Log.i(
+                                TAG,
+                                "  $label [0x%02X..0x%02X): %s".format(
+                                    from, to,
+                                    region.slice(from until to).joinToString(" ") { "%02X".format(it) },
+                                ),
+                            )
+                        }
+                        slice(com.polarppgbp.omron.OmronProtocol.UNREAD_RECORDS_RANGE, "UNREAD_RECORDS #10")
+                        slice(com.polarppgbp.omron.OmronProtocol.TIME_SYNC_RANGE, "TIME_SYNC      #9")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "READ_CUFF_SETTINGS failed: ${e.message}", e)
                     } finally {
                         pending.finish()
                     }
@@ -192,6 +248,7 @@ class DebugCommandReceiver : BroadcastReceiver() {
         const val ACTION_SET_SERVER = "com.polarppgbp.debug.SET_SERVER"
         const val ACTION_SYNC_NOW = "com.polarppgbp.debug.SYNC_NOW"
         const val ACTION_READ_CUFF = "com.polarppgbp.debug.READ_CUFF"
+        const val ACTION_READ_CUFF_SETTINGS = "com.polarppgbp.debug.READ_CUFF_SETTINGS"
         const val ACTION_PAIR_CUFF = "com.polarppgbp.debug.PAIR_CUFF"
         const val ACTION_GET_SETTINGS = "com.polarppgbp.debug.GET_SETTINGS"
         const val ACTION_SET_PROFILE = "com.polarppgbp.debug.SET_PROFILE"

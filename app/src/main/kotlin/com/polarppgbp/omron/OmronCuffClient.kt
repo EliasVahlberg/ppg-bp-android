@@ -141,8 +141,51 @@ class OmronCuffClient(
         }
     }
 
-    fun close() {
-        runCatching { bondReceiver?.let { context.unregisterReceiver(it) } }
+    /**
+     * Connect, unlock, and read the cuff's settings/config region raw.
+     *
+     * Shared primitive for two Phase 1 issues, so it is implemented once and
+     * used twice (#9 and #10 both need this same region):
+     *
+     *   - #9  cuff clock: [OmronProtocol.TIME_SYNC_RANGE] (offsets 0x14..0x1E)
+     *         holds the cuff's own clock, which is what makes the read-only
+     *         design possible — no EEPROM write needed to measure drift.
+     *   - #10 ring-buffer overflow: [OmronProtocol.UNREAD_RECORDS_RANGE]
+     *         (offsets 0x00..0x08) holds the unread-record counters.
+     *
+     * Returns the raw bytes starting at [OmronProtocol.SETTINGS_READ_ADDR];
+     * the caller indexes with the offset ranges above. Deliberately does no
+     * decoding: the byte-level layout is inferred from omblepy and the protocol
+     * notes and has not previously been read from real hardware, so the first
+     * job is to look at the actual bytes.
+     *
+     * Read-only. Nothing here writes to the cuff.
+     */
+    suspend fun readSettingsRegion(
+        deviceAddress: String? = null,
+        numBytes: Int = OmronProtocol.TRANSMISSION_BLOCK_SIZE,
+    ): ByteArray {
+        val device = resolveDevice(deviceAddress)
+        onStatus("Connecting to ${device.address}")
+        try {
+            connect(device)
+            discover()
+            enableNotify(OmronProtocol.RX_CHANNEL_UUIDS[0]) // triggers SMP bond if needed
+            waitForBonded()
+            enableNotify(OmronProtocol.UNLOCK_UUID)
+            unlock()
+            enableRemainingRxNotifications()
+            startTransmission()
+            val region = readRegion(OmronProtocol.SETTINGS_READ_ADDR, numBytes)
+            endTransmission()
+            onStatus("Read ${region.size} settings byte(s)")
+            return region
+        } finally {
+            close()
+        }
+    }
+
+    fun close() {        runCatching { bondReceiver?.let { context.unregisterReceiver(it) } }
         bondReceiver = null
         runCatching { gatt?.disconnect() }
         runCatching { gatt?.close() }
