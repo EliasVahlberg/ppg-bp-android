@@ -158,6 +158,24 @@ object OmronProtocol {
             "%04d-%02d-%02dT%02d:%02d:%02d".format(year, month, day, hour, minute, second)
     }
 
+    /**
+     * The cuff's unread-record counter, from offset `0x01` of the settings region.
+     *
+     * Only that one byte is used. Offset `0x00` was documented as a slot index but a
+     * hardware capture showed it going 0x40 -> 0xC0 across a single measurement, which is
+     * a bit flip rather than 64 -> 65, so it is not decoded here. Returns null when the
+     * region is too short.
+     *
+     * The counter increments once per measurement and is *not* cleared by this app, so it
+     * is treated as an advisory figure rather than an authoritative count of unsynced
+     * readings. Gap detection (#10) does not depend on it.
+     */
+    fun parseUnreadCount(settingsRegion: ByteArray): Int? {
+        val offset = UNREAD_RECORDS_RANGE.first + 1
+        if (settingsRegion.size <= offset) return null
+        return settingsRegion[offset].toInt() and 0xFF
+    }
+
     /** Extract bits [first,last] (inclusive, bit 0 = MSB of byte 0) from the first 8 bytes. */
     private fun bitsBe(buf: ByteArray, first: Int, last: Int): Int {
         var l = 0L

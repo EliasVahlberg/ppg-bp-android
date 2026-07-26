@@ -34,6 +34,7 @@ class CuffStore(private val dir: File) {
     private val clockLogFile = File(dir, "cuff_clock_log.jsonl")
 
     private val idRegex = Regex("\"id\":\"([^\"]*)\"")
+    private val tsRegex = Regex("\"ts\":\"([^\"]*)\"")
 
     data class Result(
         val newCount: Int,
@@ -102,6 +103,19 @@ class CuffStore(private val dir: File) {
         }
 
     fun count(): Int = existingIds().size
+
+    /**
+     * Newest reading timestamp already stored, or null when the store is empty.
+     *
+     * Must be sampled *before* ingesting a fresh read: it is the reference point for
+     * detecting that the cuff overwrote readings between syncs (#10).
+     */
+    fun newestStoredIso(): String? {
+        if (!file.exists()) return null
+        return file.readLines()
+            .mapNotNull { tsRegex.find(it)?.groupValues?.get(1) }
+            .maxOrNull()
+    }
 
     /**
      * The canonical store as a request body for POST /api/v1/cuff. Quarantined readings

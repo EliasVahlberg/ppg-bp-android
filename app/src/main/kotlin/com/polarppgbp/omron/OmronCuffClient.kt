@@ -126,6 +126,8 @@ class OmronCuffClient(
     data class CuffReadResult(
         val readings: List<OmronProtocol.CuffReading>,
         val clock: CuffClockObservation,
+        /** The cuff's own unread counter (#10), null when it could not be read. */
+        val unreadOnDevice: Int? = null,
     )
 
     /**
@@ -147,11 +149,11 @@ class OmronCuffClient(
                 OmronProtocol.USER_RECORDS_ADDR,
                 OmronProtocol.USER_RECORDS_COUNT * OmronProtocol.RECORD_SIZE,
             )
-            val clock = observeClock()
+            val (clock, unread) = observeSettings()
             endTransmission()
             val readings = decodeRegion(region)
             onStatus("Read ${readings.size} record(s). ${clock.detail}")
-            return CuffReadResult(readings, clock)
+            return CuffReadResult(readings, clock, unread)
         } finally {
             close()
         }
@@ -165,10 +167,19 @@ class OmronCuffClient(
      * read degrades to an observation with `clockValid = false` rather than losing the
      * records that were just read successfully.
      */
-    private suspend fun observeClock(): CuffClockObservation {
+    private suspend fun observeClock(): CuffClockObservation = observeSettings().first
+
+    /**
+     * One settings-region read yielding both the clock comparison and the unread counter.
+     * They live in the same region, so reading it twice would cost a second round trip
+     * and widen the clock measurement's uncertainty for nothing.
+     */
+    private suspend fun observeSettings(): Pair<CuffClockObservation, Int?> {
         val before = System.currentTimeMillis()
+        var unread: Int? = null
         val clock = try {
             val region = readRegion(OmronProtocol.SETTINGS_READ_ADDR, OmronProtocol.TRANSMISSION_BLOCK_SIZE)
+            unread = OmronProtocol.parseUnreadCount(region)
             val (from, to) = OmronProtocol.TIME_SYNC_RANGE
             if (region.size < to) {
                 Log.w(TAG, "settings region too short for the clock block: ${region.size}")
@@ -177,13 +188,14 @@ class OmronCuffClient(
                 OmronProtocol.parseTimeSync(region.copyOfRange(from, from + OmronProtocol.TIME_SYNC_BLOCK_SIZE))
             }
         } catch (e: Exception) {
-            Log.w(TAG, "clock read failed: ${e.message}")
+            Log.w(TAG, "settings read failed: ${e.message}")
             null
         }
         val after = System.currentTimeMillis()
-        return CuffClockObservation.of(clock, before, after).also {
+        val observation = CuffClockObservation.of(clock, before, after).also {
             Log.i(TAG, "clock: ${it.detail} (offset=${it.offsetSeconds}s valid=${it.clockValid})")
         }
+        return observation to unread
     }
 
     /**
@@ -469,11 +481,11 @@ class OmronCuffClient(
                 OmronProtocol.USER_RECORDS_ADDR,
                 OmronProtocol.USER_RECORDS_COUNT * OmronProtocol.RECORD_SIZE,
             )
-            val clock = observeClock()
+            val (clock, unread) = observeSettings()
             endTransmission()
             val readings = decodeRegion(region)
             onStatus("Paired + read ${readings.size} record(s). ${clock.detail}")
-            return CuffReadResult(readings, clock)
+            return CuffReadResult(readings, clock, unread)
         } finally {
             close()
         }

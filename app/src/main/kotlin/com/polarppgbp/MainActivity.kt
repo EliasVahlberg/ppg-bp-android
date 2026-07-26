@@ -48,6 +48,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.polarppgbp.omron.BufferHealth
+import com.polarppgbp.omron.CuffBufferHealth
 import com.polarppgbp.omron.CuffClockObservation
 import com.polarppgbp.omron.CuffClockRepair
 import com.polarppgbp.omron.CuffStore
@@ -366,6 +368,20 @@ private fun RecorderScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             Text(cuffStatus, style = MaterialTheme.typography.bodySmall)
+
+            // #10: the cuff overwrites past 100 readings with no error, so both the
+            // headroom and any detected loss have to be visible rather than logged.
+            val buffer by viewModel.cuffBuffer.collectAsState()
+            buffer?.let { b ->
+                Text(b.detail, style = MaterialTheme.typography.bodySmall)
+                b.warning?.let { w ->
+                    Text(
+                        "⚠ $w",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
 
             // #18: a halted RTC cannot be fixed from the cuff itself, so offer the only
             // recovery route -- but never write without asking.
@@ -867,6 +883,10 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
      * but the write still requires their confirmation, since it is the only write this
      * app performs.
      */
+    /** Ring-buffer state from the last cuff read (#10). */
+    private val _cuffBuffer = MutableStateFlow<BufferHealth?>(null)
+    val cuffBuffer: StateFlow<BufferHealth?> = _cuffBuffer
+
     private val _cuffClockHalted = MutableStateFlow<CuffClockObservation?>(null)
     val cuffClockHalted: StateFlow<CuffClockObservation?> = _cuffClockHalted
 
@@ -915,9 +935,13 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
                     if (pair) client.pairAndRead(null) else client.readRecords(null)
                 }
                 val readings = result.readings
-                val res = withContext(Dispatchers.IO) {
-                    CuffStore(File(context.filesDir, "cuff")).ingest(readings, null, result.clock)
-                }
+                val store = CuffStore(File(context.filesDir, "cuff"))
+                // Sampled before ingest: it is the reference point for detecting that the
+                // cuff overwrote readings between syncs (#10).
+                val newestStored = withContext(Dispatchers.IO) { store.newestStoredIso() }
+                val res = withContext(Dispatchers.IO) { store.ingest(readings, null, result.clock) }
+                val buffer = CuffBufferHealth.assess(readings, newestStored, result.unreadOnDevice)
+                _cuffBuffer.value = buffer
                 SyncScheduler.enqueueCuff(context)
                 // #9: surface clock trouble in the UI. Silent drift is the failure mode
                 // this issue exists to prevent, so it must not be log-only.
