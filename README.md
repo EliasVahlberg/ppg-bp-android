@@ -40,17 +40,23 @@ Each sensor's BLE stream startup is wrapped in a retry-with-backoff loop, not a 
 
 ## Debug harness
 
-A debug-only source set (`src/debug/`, excluded from release builds) exposes an ADB broadcast interface to drive the app without touching the UI — useful for wireless-ADB testing where you don't have a screen in front of you:
+A debug-only source set (`src/debug/`, excluded from release builds) exposes an ADB broadcast interface to drive the app without touching the UI — useful for wireless-ADB testing where you don't have a screen in front of you.
+
+**Every one of these needs `--receiver-include-background`.** Without it Android silently drops delivery to an app that isn't in the foreground: `am broadcast` still prints `result=0` as if it worked, but `onReceive` never fires. Confirmed on Android 14. The e2e suite bakes the flag in (`tests_e2e/e2e/adb.py`); these examples previously omitted it and did nothing.
 
 ```bash
-adb shell am broadcast -a com.polarppgbp.debug.START_RECORDING --es profile calibration --es device_id <your-polar-serial>
-adb shell am broadcast -a com.polarppgbp.debug.STOP_RECORDING
-adb shell am broadcast -a com.polarppgbp.debug.STATUS
-adb shell am broadcast -a com.polarppgbp.debug.SYNC_NOW
-adb shell am broadcast -a com.polarppgbp.debug.SET_SERVER --es url http://<host>:8000 --es token <token>
-adb shell am broadcast -a com.polarppgbp.debug.PAIR_CUFF
-adb shell am broadcast -a com.polarppgbp.debug.READ_CUFF
+B="adb shell am broadcast --receiver-include-background -a"
+
+$B com.polarppgbp.debug.START_RECORDING --es profile calibration --es device_id <your-polar-serial>
+$B com.polarppgbp.debug.STOP_RECORDING
+$B com.polarppgbp.debug.STATUS
+$B com.polarppgbp.debug.SYNC_NOW
+$B com.polarppgbp.debug.SET_SERVER --es url http://<host>:8000 --es token <token>
+$B com.polarppgbp.debug.PAIR_CUFF
+$B com.polarppgbp.debug.READ_CUFF
 ```
+
+Targeting the receiver explicitly (`-n com.polarppgbp/com.polarppgbp.debug.DebugCommandReceiver`) also works, if you prefer not to rely on the flag.
 
 ## Configuring your own device
 
