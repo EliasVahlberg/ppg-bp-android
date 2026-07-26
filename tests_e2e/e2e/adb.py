@@ -248,6 +248,32 @@ class Device:
     def set_server(self, url: str, token: str) -> None:
         self.broadcast("SET_SERVER", {"url": url, "token": token})
 
+    def set_bluetooth(self, enabled: bool) -> None:
+        """Toggle the Bluetooth adapter.
+
+        Uses ``cmd bluetooth_manager`` rather than ``settings put global bluetooth_on``:
+        observed 2026-07-26 on OxygenOS that the global setting still read 1 while the
+        adapter was genuinely off, so writing it proves nothing.
+        """
+        self._adb("shell", "cmd", "bluetooth_manager", "enable" if enabled else "disable")
+
+    def wait_for_bluetooth(self, enabled: bool, *, timeout: float = 25.0) -> None:
+        """Block until the adapter reaches the requested state.
+
+        ``dumpsys`` is the source of truth here. Note the OEM reports ``BLE_ON`` when
+        classic Bluetooth is off but BLE-scanning-always-available is on, which must not
+        be read as ON.
+        """
+        want = "state: ON" if enabled else None
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            out = self._adb("shell", "dumpsys", "bluetooth_manager")
+            on = "state: ON" in out
+            if on == enabled:
+                return
+            time.sleep(1.0)
+        raise AdbError(f"Bluetooth did not reach enabled={enabled} within {timeout}s (wanted {want})")
+
     def pull(self, remote_path: str, local_path: str | Path) -> None:
         self._adb("pull", remote_path, str(local_path), timeout=60.0)
 

@@ -68,6 +68,9 @@ object StatusColors {
     val Connecting = BrandAmber
     val Capturing = BrandGreen
     val Reconnecting = BrandRed
+
+    /** #17: a hard blocker is worse than a dropped link -- it will not self-heal. */
+    val Blocked = BrandRed
 }
 
 val JetBrainsMono = FontFamily(

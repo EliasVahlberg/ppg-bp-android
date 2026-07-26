@@ -18,6 +18,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.polarppgbp.recorder.Profile
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -97,6 +98,22 @@ class RecordingService : Service() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
+                // #17: a hard blocker (radio off, permission revoked) will never clear by
+                // itself, so starting a session would produce an empty bundle and a UI
+                // that claims to be reconnecting. Refuse loudly instead, mirroring the
+                // missing-device-ID path above and #1's fail-loudly principle.
+                val blocker = SharedRepo.repo?.currentBlocker()
+                if (blocker != null) {
+                    startForeground(
+                        NOTIF_ID,
+                        createNotification(ConnectionState.Blocked(blocker), null),
+                    )
+                    Log.w(TAG, "Not starting: ${blocker.label}. ${blocker.remedy}")
+                    SharedRepo.repo?.refreshBlocker()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 SharedRepo.manualStop = false
                 startForeground(NOTIF_ID, createNotification(ConnectionState.Idle, null))
                 val profileOverride = intent.getStringExtra("PROFILE")
@@ -138,6 +155,12 @@ class RecordingService : Service() {
         stopHeartbeat()
         SharedRepo.repo?.disconnect()
         SharedRepo.repo?.stopSession()
+        // The connectionState collector lives in `scope` and was never cancelled, so a
+        // destroyed service kept observing state and re-arming scheduleReconnect() --
+        // disconnect() above sets Idle, which the collector reads as "link dropped".
+        // Result: a zombie reconnect loop outliving the service. Cancel last, after the
+        // teardown above has run.
+        scope.cancel()
         super.onDestroy()
     }
 
@@ -162,7 +185,24 @@ class RecordingService : Service() {
         reconnectJob = scope.launch {
             val deviceId = SharedRepo.deviceId ?: prefs?.getString(KEY_DEVICE_ID, null) ?: return@launch
             var delayMs = 1000L
+            var loggedBlocker: Blocker? = null
             while (SharedRepo.repo?.connectionState?.value !is ConnectionState.Connected) {
+                // #17: never retry through a hard blocker. Backoff cannot turn a radio
+                // back on, and attempting it reports "reconnecting" for a link that will
+                // not return. Hold here, quietly, until the blocker clears -- turning
+                // Bluetooth back on mid-session then resumes the recording rather than
+                // requiring the user to notice and restart.
+                val state = SharedRepo.repo?.connectionState?.value
+                if (state is ConnectionState.Blocked) {
+                    if (loggedBlocker != state.cause) {
+                        Log.w(TAG, "Not reconnecting: ${state.cause.label}. ${state.cause.remedy}")
+                        loggedBlocker = state.cause
+                    }
+                    delayMs = 1000L
+                    delay(2_000L)
+                    continue
+                }
+                loggedBlocker = null
                 Log.i(TAG, "Reconnecting to $deviceId in ${delayMs}ms")
                 delay(delayMs)
                 if (SharedRepo.repo?.connectionState?.value !is ConnectionState.Connected) {
@@ -192,6 +232,7 @@ class RecordingService : Service() {
         )
         
         val title = when (state) {
+            is ConnectionState.Blocked -> state.cause.label
             is ConnectionState.Connected -> "Recording: ${state.name}"
             is ConnectionState.Connecting -> "Connecting..."
             is ConnectionState.Searching -> "Searching..."
@@ -199,6 +240,7 @@ class RecordingService : Service() {
         }
         
         val text = when (state) {
+            is ConnectionState.Blocked -> "Not recording. ${state.cause.remedy}"
             is ConnectionState.Connected -> "PPG: ${metrics?.ppgSamples ?: 0} | ACC: ${metrics?.accSamples ?: 0} | GYRO: ${metrics?.gyroSamples ?: 0}"
             is ConnectionState.Failed -> "Disconnected: ${state.reason}"
             else -> "Waiting for device"

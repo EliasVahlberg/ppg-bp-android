@@ -171,3 +171,96 @@ def test_sync_uploads_to_server(clean_log: Device, e2e_config: E2EConfig):
 
     files = device.ls(session_dir)
     assert ".synced" in files, f"no .synced marker in {session_dir} after sync completed — {files}"
+
+
+
+def _settle_bluetooth_stack() -> None:
+    """Give the BLE stack a moment after the adapter has been power-cycled.
+
+    Twice on 2026-07-26, a capture test run shortly after repeated adapter toggling
+    reported a stream as started ("ACC streaming @ 416Hz") while delivering zero
+    samples, and recovered only after the app process was restarted. Root cause was
+    not established, so this is a deliberately conservative pause rather than a fix:
+    tests that toggle the radio should not leave the stack hot for whatever runs next.
+    """
+    time.sleep(5)
+
+@pytest.mark.e2e
+def test_bluetooth_off_is_reported_and_not_retried_forever(clean_log: Device):
+    """#17: Bluetooth off must fail loudly and stop, not retry silently forever.
+
+    Reproduces the failure observed 2026-07-26 while bringing up this suite: with the
+    radio off, starting a recording produced no user-visible error and an unbounded
+    reconnect loop, which the UI rendered as "Lost connection - reconnecting" -- a
+    recovery that could never happen.
+
+    The radio is restored in a finally block. If this test is interrupted between the
+    disable and the restore, re-enable Bluetooth on the device manually.
+    """
+    device = clean_log
+    device.set_bluetooth(False)
+    try:
+        device.wait_for_bluetooth(False)
+        device.clear_log()
+        device.start_recording()
+
+        log = device.wait_for_log(r"RecordingService: Not starting: Bluetooth is off", timeout=20.0)
+        assert "Turn Bluetooth on to record" in log, (
+            f"the log must state the remedy, not just the cause:\n{log}"
+        )
+
+        # Hold and observe: a bounded number of attempts, not an escalating storm. The
+        # pre-fix behaviour produced a new attempt every 1/2/4/8/16s indefinitely.
+        # Refusing at START leaves no loop running at all, but a loop already in flight
+        # (radio switched off mid-session) holds instead of retrying, so allow either and
+        # require the reason to be logged whenever attempts did occur.
+        time.sleep(20)
+        snapshot = device.log_snapshot(tag_filter="RecordingService")
+        attempts = snapshot.count("Reconnecting to")
+        assert attempts <= 2, (
+            f"expected the reconnect loop to hold while blocked, saw {attempts} attempts:\n{snapshot}"
+        )
+        if attempts:
+            assert "Not reconnecting: Bluetooth is off" in snapshot, (
+                f"a held loop must say why it is not retrying:\n{snapshot}"
+            )
+        assert not device.is_recording(), "no session should be running with the radio off"
+    finally:
+        device.set_bluetooth(True)
+        device.wait_for_bluetooth(True)
+        _settle_bluetooth_stack()
+
+
+@pytest.mark.e2e
+def test_recording_survives_and_resumes_after_bluetooth_outage(clean_log: Device):
+    """#17: a mid-session radio outage must hold, then resume into the same session.
+
+    This is the data-preservation half of the issue: the session bundle must not be
+    abandoned when the radio drops, and the user must not have to notice and restart.
+    """
+    device = clean_log
+    device.start_recording()
+    try:
+        started = device.wait_for_log(r"PolarRepo: Started session (\S+)", timeout=30.0)
+        session_dir = re.search(r"PolarRepo: Started session (\S+)", started).group(1)
+        device.wait_for_log(r"PolarRepo: Connected to ", timeout=45.0)
+        time.sleep(5)
+
+        device.set_bluetooth(False)
+        device.wait_for_bluetooth(False)
+        device.wait_for_log(r"RecordingService: Not reconnecting: Bluetooth is off", timeout=30.0)
+
+        device.set_bluetooth(True)
+        device.wait_for_bluetooth(True)
+        device.wait_for_log(r"PolarRepo: Connected to ", timeout=60.0)
+        time.sleep(8)
+
+        status = device.shell_status()
+        assert session_dir in status, (
+            f"recording should have resumed into the same session {session_dir}, got:\n{status}"
+        )
+    finally:
+        device.set_bluetooth(True)
+        device.wait_for_bluetooth(True)
+        device.stop_recording()
+        _settle_bluetooth_stack()

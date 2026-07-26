@@ -68,6 +68,13 @@ sealed interface ConnectionState {
     data class Connecting(val deviceId: String) : ConnectionState
     data class Connected(val deviceId: String, val name: String) : ConnectionState
     data class Failed(val reason: String) : ConnectionState
+
+    /**
+     * A hard condition that no amount of retrying will fix (#17). Distinct from
+     * [Failed] precisely so the reconnect loop and the UI can tell "try again" apart
+     * from "this will never work until the user does something".
+     */
+    data class Blocked(val cause: Blocker) : ConnectionState
 }
 
 data class LiveMetrics(
@@ -131,6 +138,17 @@ class PolarRepository(context: Context) {
         api.setApiCallback(object : PolarBleApiCallback() {
             override fun blePowerStateChanged(powered: Boolean) {
                 Log.i(TAG, "BLE power: $powered")
+                // #17: this used to log and discard, leaving the UI to guess. Radio off
+                // is a blocker, not a dropped link.
+                if (!powered) {
+                    _connectionState.value = ConnectionState.Blocked(Blocker.BLUETOOTH_OFF)
+                } else if (_connectionState.value.let {
+                        it is ConnectionState.Blocked && it.cause == Blocker.BLUETOOTH_OFF
+                    }
+                ) {
+                    // Radio came back. Drop to Idle so the reconnect loop may resume.
+                    _connectionState.value = ConnectionState.Idle
+                }
             }
 
             override fun deviceConnecting(polarDeviceInfo: PolarDeviceInfo) {
@@ -266,7 +284,32 @@ class PolarRepository(context: Context) {
 
     // --------------------------------------------------------- connection API
 
+    /** Current hard blocker, or null when the link is permitted to work. */
+    fun currentBlocker(): Blocker? = BleReadiness.current(appContext)
+
+    /**
+     * Publish the current blocker (or clear a stale one). Called on resume so a
+     * permission revoked while the app was backgrounded surfaces immediately rather
+     * than at the next connection attempt.
+     */
+    fun refreshBlocker() {
+        val blocker = currentBlocker()
+        val state = _connectionState.value
+        if (blocker != null) {
+            if (state !is ConnectionState.Connected) {
+                _connectionState.value = ConnectionState.Blocked(blocker)
+            }
+        } else if (state is ConnectionState.Blocked) {
+            _connectionState.value = ConnectionState.Idle
+        }
+    }
+
     fun connect(deviceId: String) {
+        currentBlocker()?.let {
+            Log.w(TAG, "Not connecting: ${it.label}")
+            _connectionState.value = ConnectionState.Blocked(it)
+            return
+        }
         try {
             _connectionState.value = ConnectionState.Connecting(deviceId)
             api.connectToDevice(deviceId)
@@ -276,6 +319,11 @@ class PolarRepository(context: Context) {
     }
 
     fun scanAndConnect() {
+        currentBlocker()?.let {
+            Log.w(TAG, "Not scanning: ${it.label}")
+            _connectionState.value = ConnectionState.Blocked(it)
+            return
+        }
         searchJob?.cancel()
         _connectionState.value = ConnectionState.Searching()
         searchJob = scope.launch {

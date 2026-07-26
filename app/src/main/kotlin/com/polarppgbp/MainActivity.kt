@@ -70,6 +70,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.TextButton
@@ -183,6 +184,10 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.permissionsGranted = allSetupRequirementsMet(this)
+        // #17: re-check on every resume, not only first run. A permission revoked or
+        // Bluetooth switched off while backgrounded must surface now, not at the next
+        // failed connection attempt.
+        viewModel.refreshBlocker()
         viewModel.refreshSessions()
     }
 }
@@ -190,21 +195,32 @@ class MainActivity : ComponentActivity() {
 
 /** Coarse recorder phase derived from (recording, connectionState). onColor
  * picks readable text for each phase's (bright vs muted/dark) background. */
-private enum class Phase(val label: String, val color: Color, val onColor: Color) {
+internal enum class Phase(val label: String, val color: Color, val onColor: Color) {
     STOPPED("Stopped", StatusColors.Stopped, Color(0xFFE4EAE7)),
     CONNECTING("Connecting…", StatusColors.Connecting, BrandBackground),
     CAPTURING("● Capturing", StatusColors.Capturing, BrandBackground),
     RECONNECTING("Lost connection — reconnecting", StatusColors.Reconnecting, BrandBackground),
+
+    /**
+     * #17: a hard blocker, shown whether or not a recording was requested. Kept
+     * separate from RECONNECTING because that label promises a recovery that will
+     * never happen while the radio is off or a permission is missing.
+     */
+    BLOCKED("Cannot record", StatusColors.Blocked, BrandBackground),
 }
 
-private fun phaseOf(recording: Boolean, s: ConnectionState): Phase = when {
+internal fun phaseOf(recording: Boolean, s: ConnectionState): Phase = when {
+    // A blocker outranks "stopped": it is worth telling the user the app cannot
+    // record even before they press start.
+    s is ConnectionState.Blocked -> Phase.BLOCKED
     !recording -> Phase.STOPPED
     s is ConnectionState.Connected -> Phase.CAPTURING
     s is ConnectionState.Connecting || s is ConnectionState.Searching -> Phase.CONNECTING
     else -> Phase.RECONNECTING // recording but Idle/Failed => link dropped
 }
 
-private fun detailOf(recording: Boolean, s: ConnectionState): String = when (s) {
+internal fun detailOf(recording: Boolean, s: ConnectionState): String = when (s) {
+    is ConnectionState.Blocked -> "${s.cause.label} — ${s.cause.remedy}"
     is ConnectionState.Connected -> s.name
     is ConnectionState.Connecting -> "device ${s.deviceId}"
     is ConnectionState.Searching -> s.message
@@ -262,6 +278,26 @@ private fun RecorderScreen(
                 Spacer(Modifier.height(6.dp))
                 Text(detailOf(recording, connectionState), fontSize = 15.sp, color = phase.onColor)
             }
+
+            // #17: one-tap remediation. Sending the user hunting through OS settings is
+            // the difference between a fixable state and an app that just does not work.
+            // A missing permission routes to the setup checklist automatically (see the
+            // permissionsGranted LaunchedEffect), so only the radio needs a button here.
+            (connectionState as? ConnectionState.Blocked)
+                ?.takeIf { it.cause == Blocker.BLUETOOTH_OFF }
+                ?.let {
+                    val ctx = LocalContext.current
+                    Button(
+                        onClick = {
+                            runCatching {
+                                ctx.startActivity(
+                                    Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE),
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Turn on Bluetooth") }
+                }
 
             // Live sample counters.
             Row(horizontalArrangement = Arrangement.spacedBy(Spacing.lg)) {
@@ -523,7 +559,18 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         sessions = SharedRepo.repo?.listRecentSessions(8) ?: emptyList()
     }
 
+    /** #17: re-publish (or clear) the hard blocker; called from onResume. */
+    fun refreshBlocker() {
+        SharedRepo.repo?.refreshBlocker()
+    }
+
     fun startRecording() {
+        // #17: check before starting so the user sees the cause immediately. The service
+        // repeats this check, since it can also be started by the debug broadcast.
+        SharedRepo.repo?.currentBlocker()?.let {
+            SharedRepo.repo?.refreshBlocker()
+            return
+        }
         val intent = Intent(context, RecordingService::class.java).apply { action = "START" }
         context.startForegroundService(intent)
     }
