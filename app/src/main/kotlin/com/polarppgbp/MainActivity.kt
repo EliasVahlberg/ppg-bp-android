@@ -14,6 +14,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,6 +52,8 @@ import com.polarppgbp.omron.CuffStore
 import com.polarppgbp.omron.OmronCuffClient
 import com.polarppgbp.settings.ProfileChoice
 import com.polarppgbp.settings.RecordingSettings
+import com.polarppgbp.settings.ServerConfig
+import com.polarppgbp.settings.ServerConfigResult
 import com.polarppgbp.settings.SettingsStore
 import com.polarppgbp.settings.SupportedRates
 import com.polarppgbp.rop.SensorType
@@ -70,7 +75,11 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.TextButton
@@ -381,6 +390,121 @@ private fun RecorderScreen(
  * Settings screen (#1). Styled per the app theme (Theme.kt) — dark brand
  * palette, JetBrains Mono for the Hz readouts, consistent Spacing scale.
  */
+/**
+ * Server section of the settings screen (#15).
+ *
+ * Before this existed the server was only settable over ADB, so a release build could
+ * record but could never upload -- the debug receiver that wrote KEY_SERVER_URL is
+ * stripped by R8. Validation happens here rather than in the sync worker, because a
+ * malformed value only shows up there as sync silently never running.
+ */
+@Composable
+private fun ServerSection(viewModel: MainViewModel) {
+    var url by remember { mutableStateOf(viewModel.serverUrl.orEmpty()) }
+    var token by remember { mutableStateOf("") }
+    var revealToken by remember { mutableStateOf(false) }
+    var urlError by remember { mutableStateOf<String?>(null) }
+    var tokenError by remember { mutableStateOf<String?>(null) }
+    var saved by remember { mutableStateOf(false) }
+
+    Text("Server", style = MaterialTheme.typography.titleSmall)
+
+    Text(
+        if (viewModel.serverConfigured) {
+            "Configured: ${viewModel.serverUrl}  token ${ServerConfig.maskToken(viewModel.serverToken)}"
+        } else {
+            "Not configured — recordings stay on this phone until a server is set."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = if (viewModel.serverConfigured) {
+            MaterialTheme.colorScheme.outline
+        } else {
+            MaterialTheme.colorScheme.error
+        },
+    )
+
+    OutlinedTextField(
+        value = url,
+        onValueChange = { url = it; urlError = null; saved = false },
+        label = { Text("Address") },
+        placeholder = { Text("192.168.1.5:8000") },
+        singleLine = true,
+        isError = urlError != null,
+        supportingText = urlError?.let { { Text(it) } },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+        modifier = Modifier.fillMaxWidth(),
+    )
+
+    OutlinedTextField(
+        value = token,
+        onValueChange = { token = it; tokenError = null; saved = false },
+        label = { Text("Access token") },
+        placeholder = { Text(if (viewModel.serverConfigured) "leave blank to keep current" else "") },
+        singleLine = true,
+        isError = tokenError != null,
+        supportingText = tokenError?.let { { Text(it) } },
+        // Masked by default: this is a bearer token on a device that may be handed
+        // around, and it should not sit in plain view or in a screenshot.
+        visualTransformation = if (revealToken) {
+            VisualTransformation.None
+        } else {
+            PasswordVisualTransformation()
+        },
+        trailingIcon = {
+            TextButton(onClick = { revealToken = !revealToken }) {
+                Text(if (revealToken) "Hide" else "Show")
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+
+    if (token.isNotBlank() && !ServerConfig.looksLikeServerToken(token)) {
+        Text(
+            "That does not look like a server token (expected 64 hex characters). " +
+                "It will still be saved.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+        Button(
+            onClick = {
+                // An empty token field means "keep the stored one", so a user editing
+                // only the address does not have to retype 64 characters.
+                val effectiveToken = token.ifBlank { viewModel.serverToken.orEmpty() }
+                when (val result = ServerConfig.validate(url, effectiveToken)) {
+                    is ServerConfigResult.Valid -> {
+                        viewModel.setServer(result)
+                        url = result.url
+                        token = ""
+                        urlError = null
+                        tokenError = null
+                        saved = true
+                    }
+                    is ServerConfigResult.Invalid -> {
+                        urlError = result.urlError
+                        tokenError = result.tokenError
+                        saved = false
+                    }
+                }
+            },
+            modifier = Modifier.weight(1f),
+        ) { Text(if (saved) "Saved" else "Save server") }
+
+        if (viewModel.serverConfigured) {
+            OutlinedButton(
+                onClick = {
+                    viewModel.clearServer()
+                    url = ""
+                    token = ""
+                    saved = false
+                },
+            ) { Text("Clear") }
+        }
+    }
+}
+
 @Composable
 private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
     val settings = viewModel.settings
@@ -388,7 +512,14 @@ private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
 
     Scaffold { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(Spacing.lg),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(Spacing.lg)
+                // The screen gained a Server section (#15) and no longer fits on one
+                // display, so it scrolls. This also replaces the weight(1f) spacer that
+                // previously pinned the reset button to the bottom.
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(Spacing.lg),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -449,7 +580,10 @@ private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.outline,
             )
 
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(Spacing.sm))
+            ServerSection(viewModel)
+
+            Spacer(Modifier.height(Spacing.lg))
 
             OutlinedButton(
                 onClick = { showResetConfirm = true },
@@ -562,6 +696,31 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
     /** #17: re-publish (or clear) the hard blocker; called from onResume. */
     fun refreshBlocker() {
         SharedRepo.repo?.refreshBlocker()
+    }
+
+    // ---- server configuration (#15) ----
+
+    var serverUrl: String? by mutableStateOf(settingsStore.getServerUrl())
+        private set
+    var serverToken: String? by mutableStateOf(settingsStore.getServerToken())
+        private set
+    var serverConfigured: Boolean by mutableStateOf(settingsStore.isServerConfigured())
+        private set
+
+    fun setServer(valid: ServerConfigResult.Valid) {
+        settingsStore.setServer(valid)
+        refreshServerState()
+    }
+
+    fun clearServer() {
+        settingsStore.clearServer()
+        refreshServerState()
+    }
+
+    private fun refreshServerState() {
+        serverUrl = settingsStore.getServerUrl()
+        serverToken = settingsStore.getServerToken()
+        serverConfigured = settingsStore.isServerConfigured()
     }
 
     fun startRecording() {

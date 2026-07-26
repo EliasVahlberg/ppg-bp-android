@@ -18,6 +18,8 @@
 package com.polarppgbp.settings
 
 import android.content.Context
+import com.polarppgbp.KEY_SERVER_TOKEN
+import com.polarppgbp.KEY_SERVER_URL
 import com.polarppgbp.PREFS_NAME
 import com.polarppgbp.recorder.Profile
 import com.polarppgbp.rop.SensorType
@@ -118,6 +120,35 @@ class SettingsStore(context: Context) {
             else -> return
         }
         prefs.edit().putInt(key, hz).apply()
+    }
+
+    // ---- server configuration (#15) ----
+    //
+    // Reads and writes the same KEY_SERVER_URL / KEY_SERVER_TOKEN that SyncWorker and
+    // CuffSyncWorker already consume, so a value set earlier by the debug SET_SERVER
+    // broadcast keeps working and the UI shows it rather than a blank field.
+
+    fun getServerUrl(): String? = prefs.getString(KEY_SERVER_URL, null)
+
+    fun getServerToken(): String? = prefs.getString(KEY_SERVER_TOKEN, null)
+
+    fun isServerConfigured(): Boolean =
+        !getServerUrl().isNullOrBlank() && !getServerToken().isNullOrBlank()
+
+    /**
+     * Persist an already-validated URL/token pair. Takes [ServerConfigResult.Valid] so
+     * an unvalidated string cannot reach storage by mistake -- a malformed value here
+     * surfaces as sync silently never running.
+     */
+    fun setServer(valid: ServerConfigResult.Valid) {
+        prefs.edit()
+            .putString(KEY_SERVER_URL, valid.url)
+            .putString(KEY_SERVER_TOKEN, valid.token)
+            .apply()
+    }
+
+    fun clearServer() {
+        prefs.edit().remove(KEY_SERVER_URL).remove(KEY_SERVER_TOKEN).apply()
     }
 
     /** Resets profile + custom rates to RecordingSettings.DEFAULT. Does not
