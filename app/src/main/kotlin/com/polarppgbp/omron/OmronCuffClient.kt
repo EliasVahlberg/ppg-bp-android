@@ -185,6 +185,135 @@ class OmronCuffClient(
         }
     }
 
+    /** Explicit clock setpoint. Omit to use the phone clock sampled at write time. */
+    data class ClockSetpoint(
+        val year: Int,
+        val month: Int,
+        val day: Int,
+        val hour: Int,
+        val minute: Int,
+        val second: Int,
+    )
+
+    /**
+     * Result of a clock-write attempt. Carries enough raw material to audit the
+     * write after the fact without re-reading the device.
+     *
+     * [clockAfter] is read *in the same session* and therefore normally still shows
+     * the old value: settings writes stage into the write mirror and are committed
+     * by the device at end-of-transmission (verified on hardware 2026-07-26). Real
+     * verification requires a second connection — see [OmronProtocol.CuffClock].
+     */
+    data class ClockWriteResult(
+        val snapshotBefore: ByteArray,
+        val snapshotAfter: ByteArray,
+        val payload: ByteArray,
+        val writeAddress: Int,
+        val clockBefore: OmronProtocol.CuffClock,
+        val clockAfter: OmronProtocol.CuffClock,
+        /** Offsets (from the settings read base) that changed but should not have. */
+        val unexpectedChanges: List<Int>,
+    )
+
+    /**
+     * Write the cuff's clock. **The only write path in this app.**
+     *
+     * The Evolv has no on-device clock UI, so once its RTC halts (battery change)
+     * this is the sole recovery route — see issue #18.
+     *
+     * Safety measures, in order:
+     *  1. Snapshot the settings read region *including* the write mirror before
+     *     touching anything, so an unintended change is detectable.
+     *  2. Refuse to write unless the clock is actually halted, unless [force].
+     *  3. Write only the 10 time bytes, at [OmronProtocol.timeSyncWriteAddress].
+     *  4. Re-read the snapshot and diff every byte outside both the time block and
+     *     the write mirror's copy of it.
+     *
+     * The setpoint is sampled immediately before the write, not when the caller is
+     * invoked: connect + bond + unlock costs several seconds and would otherwise be
+     * baked into the cuff's clock as a permanent offset.
+     */
+    suspend fun writeCuffClock(
+        deviceAddress: String? = null,
+        setpoint: ClockSetpoint? = null,
+        force: Boolean = false,
+        snapshotBytes: Int = 0x4C,
+    ): ClockWriteResult {
+        val writeAddr = OmronProtocol.timeSyncWriteAddress()
+        val timeOffset = OmronProtocol.TIME_SYNC_RANGE.first
+        val mirrorOffset = OmronProtocol.SETTINGS_WRITE_ADDR - OmronProtocol.SETTINGS_READ_ADDR + timeOffset
+        val device = resolveDevice(deviceAddress)
+        onStatus("Connecting to ${device.address}")
+        try {
+            connect(device)
+            discover()
+            enableNotify(OmronProtocol.RX_CHANNEL_UUIDS[0])
+            waitForBonded()
+            enableNotify(OmronProtocol.UNLOCK_UUID)
+            unlock()
+            enableRemainingRxNotifications()
+            startTransmission()
+
+            val before = readRegion(OmronProtocol.SETTINGS_READ_ADDR, snapshotBytes)
+            val clockBefore = OmronProtocol.parseTimeSync(
+                before.copyOfRange(timeOffset, timeOffset + OmronProtocol.TIME_SYNC_BLOCK_SIZE),
+            )
+            onStatus("clock before: ${clockBefore.iso()} halted=${clockBefore.halted} crcOk=${clockBefore.checksumOk}")
+
+            if (!clockBefore.halted && !force) {
+                endTransmission()
+                throw CuffException(
+                    "Refusing to write: clock is not halted (${clockBefore.iso()}). Pass force to override.",
+                )
+            }
+
+            // Sample the wall clock here, after all connection latency.
+            val sp = setpoint ?: java.util.Calendar.getInstance().let {
+                ClockSetpoint(
+                    it.get(java.util.Calendar.YEAR),
+                    it.get(java.util.Calendar.MONTH) + 1,
+                    it.get(java.util.Calendar.DAY_OF_MONTH),
+                    it.get(java.util.Calendar.HOUR_OF_DAY),
+                    it.get(java.util.Calendar.MINUTE),
+                    it.get(java.util.Calendar.SECOND),
+                )
+            }
+            val payload = OmronProtocol.encodeTimeSync(
+                sp.year, sp.month, sp.day, sp.hour, sp.minute, sp.second,
+            )
+            onStatus("writing ${OmronProtocol.bytesToHex(payload)} @ 0x${writeAddr.toString(16)} (setpoint ${sp.year}-${sp.month}-${sp.day} ${sp.hour}:${sp.minute}:${sp.second})")
+            writeRegion(writeAddr, payload)
+
+            val after = readRegion(OmronProtocol.SETTINGS_READ_ADDR, snapshotBytes)
+            val clockAfter = OmronProtocol.parseTimeSync(
+                after.copyOfRange(timeOffset, timeOffset + OmronProtocol.TIME_SYNC_BLOCK_SIZE),
+            )
+            // Commit happens here; the live block only changes after this returns.
+            endTransmission()
+
+            val expected = (timeOffset until timeOffset + OmronProtocol.TIME_SYNC_BLOCK_SIZE) +
+                (mirrorOffset until mirrorOffset + OmronProtocol.TIME_SYNC_BLOCK_SIZE)
+            val unexpected = before.indices
+                .filter { it !in expected && it < after.size && before[it] != after[it] }
+
+            onStatus("staged; live clock updates on end-of-transmission — verify with a fresh read")
+            if (unexpected.isNotEmpty()) {
+                onStatus("WARNING: ${unexpected.size} byte(s) changed outside the time block")
+            }
+            return ClockWriteResult(
+                snapshotBefore = before,
+                snapshotAfter = after,
+                payload = payload,
+                writeAddress = writeAddr,
+                clockBefore = clockBefore,
+                clockAfter = clockAfter,
+                unexpectedChanges = unexpected,
+            )
+        } finally {
+            close()
+        }
+    }
+
     fun close() {        runCatching { bondReceiver?.let { context.unregisterReceiver(it) } }
         bondReceiver = null
         runCatching { gatt?.disconnect() }
@@ -474,6 +603,18 @@ class OmronCuffClient(
             remaining -= chunk
         }
         return out.toByteArray()
+    }
+
+    private suspend fun writeRegion(startAddr: Int, data: ByteArray) {
+        val pkt = sendCommand(OmronProtocol.buildWriteEeprom(startAddr, data))
+        if (!pkt.packetType.contentEquals(OmronProtocol.RX_WRITE)) {
+            throw CuffException("Unexpected write response: ${OmronProtocol.bytesToHex(pkt.packetType)}")
+        }
+        if (pkt.eepromAddress != startAddr) {
+            throw CuffException(
+                "Write address mismatch: sent ${startAddr.toString(16)}, echoed ${pkt.eepromAddress.toString(16)}",
+            )
+        }
     }
 
     private fun decodeRegion(buffer: ByteArray): List<OmronProtocol.CuffReading> {

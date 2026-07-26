@@ -237,6 +237,81 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 }
             }
 
+            ACTION_WRITE_CUFF_TIME -> {
+                // #18: recover a halted cuff RTC. The ONLY write path to the cuff.
+                // Defaults to the phone's current local time; `--es time` accepts
+                // "yyyy-MM-ddTHH:mm:ss". Refuses to write unless the clock is
+                // halted, unless `--ez force true`.
+                val address = intent.getStringExtra("address")
+                val force = intent.getBooleanExtra("force", false)
+                val timeArg = intent.getStringExtra("time")
+                val pending = goAsync()
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        var setpoint: OmronCuffClient.ClockSetpoint? = null
+                        if (timeArg != null) {
+                            val m = Regex("""(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})""")
+                                .matchEntire(timeArg.trim())
+                                ?: throw IllegalArgumentException(
+                                    "bad --es time '$timeArg', want yyyy-MM-ddTHH:mm:ss",
+                                )
+                            val g = m.groupValues.drop(1).map { it.toInt() }
+                            setpoint = OmronCuffClient.ClockSetpoint(g[0], g[1], g[2], g[3], g[4], g[5])
+                        }
+                        Log.i(
+                            TAG,
+                            "WRITE_CUFF_TIME setpoint=${setpoint ?: "phone clock at write time"} force=$force",
+                        )
+                        val client = OmronCuffClient(
+                            context.applicationContext,
+                            onStatus = { Log.i(TAG, "cuff: $it") },
+                        )
+                        val r = client.writeCuffClock(
+                            deviceAddress = address,
+                            setpoint = setpoint,
+                            force = force,
+                        )
+                        val base = com.polarppgbp.omron.OmronProtocol.SETTINGS_READ_ADDR
+                        fun dump(label: String, bytes: ByteArray) {
+                            Log.i(TAG, "  $label (${bytes.size} bytes @ 0x%04X)".format(base))
+                            bytes.toList().chunked(16).forEachIndexed { row, chunk ->
+                                val off = row * 16
+                                Log.i(
+                                    TAG,
+                                    "    +0x%02X (0x%04X): %s".format(
+                                        off, base + off,
+                                        chunk.joinToString(" ") { "%02X".format(it) },
+                                    ),
+                                )
+                            }
+                        }
+                        Log.i(TAG, "WRITE_CUFF_TIME: wrote @0x%04X".format(r.writeAddress))
+                        Log.i(TAG, "  payload: ${com.polarppgbp.omron.OmronProtocol.bytesToHex(r.payload)}")
+                        dump("BEFORE", r.snapshotBefore)
+                        dump("AFTER ", r.snapshotAfter)
+                        Log.i(TAG, "  clockBefore: ${r.clockBefore}")
+                        Log.i(TAG, "  clockAfter : ${r.clockAfter}")
+                        if (r.unexpectedChanges.isEmpty()) {
+                            Log.i(TAG, "  VERIFY OK: no bytes changed outside the time block")
+                        } else {
+                            Log.e(
+                                TAG,
+                                "  VERIFY FAIL: unexpected changes at offsets " +
+                                    r.unexpectedChanges.joinToString(", ") { "0x%02X".format(it) },
+                            )
+                        }
+                        Log.i(
+                            TAG,
+                            "  clock now valid=${r.clockAfter.valid} halted=${r.clockAfter.halted}",
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "WRITE_CUFF_TIME failed: ${e.message}", e)
+                    } finally {
+                        pending.finish()
+                    }
+                }
+            }
+
             else -> Log.w(TAG, "Unknown action: ${intent.action}")
         }
     }
@@ -249,6 +324,7 @@ class DebugCommandReceiver : BroadcastReceiver() {
         const val ACTION_SYNC_NOW = "com.polarppgbp.debug.SYNC_NOW"
         const val ACTION_READ_CUFF = "com.polarppgbp.debug.READ_CUFF"
         const val ACTION_READ_CUFF_SETTINGS = "com.polarppgbp.debug.READ_CUFF_SETTINGS"
+        const val ACTION_WRITE_CUFF_TIME = "com.polarppgbp.debug.WRITE_CUFF_TIME"
         const val ACTION_PAIR_CUFF = "com.polarppgbp.debug.PAIR_CUFF"
         const val ACTION_GET_SETTINGS = "com.polarppgbp.debug.GET_SETTINGS"
         const val ACTION_SET_PROFILE = "com.polarppgbp.debug.SET_PROFILE"

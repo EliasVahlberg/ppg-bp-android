@@ -7,7 +7,9 @@
 package com.polarppgbp.omron
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -98,5 +100,103 @@ class OmronProtocolTest {
         // head = first 2 slots
         assertEquals(OmronProtocol.USER_RECORDS_ADDR, reads[1].address)
         assertEquals(2 * 14, reads[1].size)
+    }
+
+    // ---- cuff clock (#9 / #18) ----
+    //
+    // Fixtures below are real bytes captured from BLEsmart_0000021F005FBFF75ABE on
+    // 2026-07-26, including the halted-RTC state after a deliberate battery pull.
+    // Do not "tidy" them.
+
+    @Test
+    fun clockParsesValidHardwareSample() {
+        // phone clock read 19:39:24.6 when this was captured
+        val c = OmronProtocol.parseTimeSync(OmronProtocol.hexToBytes("a0c0071a131a192711ee"))
+        assertEquals(2026, c.year)
+        assertEquals(7, c.month)
+        assertEquals(26, c.day)
+        assertEquals(19, c.hour)
+        assertEquals(39, c.minute)
+        assertEquals(25, c.second)
+        assertTrue(c.checksumOk)
+        assertFalse(c.halted)
+        assertTrue(c.valid)
+        assertEquals("2026-07-26T19:39:25", c.iso())
+    }
+
+    @Test
+    fun clockAllFourHardwareSamplesChecksumOk() {
+        listOf(
+            "a0c0071a131a192711ee",
+            "a0c0071a131a3a2aed12",
+            "a0c0071a131a3533e916",
+            "a0c0071a131a2a3aed12",
+        ).forEach { h ->
+            val c = OmronProtocol.parseTimeSync(OmronProtocol.hexToBytes(h))
+            assertTrue("checksum should verify for $h", c.checksumOk)
+            assertFalse("should not look halted: $h", c.halted)
+        }
+    }
+
+    @Test
+    fun clockDetectsHaltedSentinel() {
+        // Captured 20:22 and again 20:28 after pulling the batteries: byte-identical,
+        // seconds field 0x3F (63), checksum still valid.
+        val c = OmronProtocol.parseTimeSync(OmronProtocol.hexToBytes("a0c0071a141a3f0011ee"))
+        assertEquals(63, c.secondRaw)
+        assertTrue("0x3F must be recognised as halted", c.halted)
+        assertTrue("the device still checksums the sentinel", c.checksumOk)
+        assertFalse("a halted clock is never valid", c.valid)
+        assertEquals(59, c.second) // clipped for display only
+    }
+
+    @Test
+    fun clockEncodeRoundTripsHardwareSample() {
+        val e = OmronProtocol.encodeTimeSync(2026, 7, 26, 19, 39, 25)
+        assertEquals("a0c0071a131a192711ee", OmronProtocol.bytesToHex(e))
+    }
+
+    @Test
+    fun clockEncodedChecksumObeysBothRules() {
+        val b = OmronProtocol.encodeTimeSync(2026, 12, 31, 23, 59, 59)
+        var sum = 0
+        for (i in 0 until 8) sum += b[i].toInt() and 0xFF
+        sum = sum and 0xFF
+        assertEquals("byte 9 is the low byte of the sum", sum, b[9].toInt() and 0xFF)
+        assertEquals(
+            "byte 8 + byte 9 == 0xFF",
+            0xFF,
+            ((b[8].toInt() and 0xFF) + (b[9].toInt() and 0xFF)) and 0xFF,
+        )
+    }
+
+    @Test
+    fun clockEncodeRejectsSentinelSeconds() {
+        // Guards against ever writing the halted sentinel ourselves.
+        assertThrows(IllegalArgumentException::class.java) {
+            OmronProtocol.encodeTimeSync(2026, 7, 26, 20, 0, 63)
+        }
+    }
+
+    @Test
+    fun clockWriteGoesToSettingsWriteMirror() {
+        assertEquals(OmronProtocol.SETTINGS_WRITE_ADDR + 0x14, OmronProtocol.timeSyncWriteAddress())
+        assertEquals(0x029A, OmronProtocol.timeSyncWriteAddress())
+    }
+
+    @Test
+    fun clockRoundTripOverManyTimes() {
+        for (h in 0..23) for (m in listOf(0, 7, 31, 59)) {
+            val e = OmronProtocol.encodeTimeSync(2026, 7, 26, h, m, 12)
+            val c = OmronProtocol.parseTimeSync(e)
+            assertTrue(c.checksumOk)
+            assertTrue(c.valid)
+            assertEquals(h, c.hour)
+            assertEquals(m, c.minute)
+            assertEquals(12, c.second)
+            assertEquals(26, c.day)
+            assertEquals(7, c.month)
+            assertEquals(2026, c.year)
+        }
     }
 }

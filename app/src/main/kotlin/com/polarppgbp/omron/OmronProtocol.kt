@@ -134,6 +134,15 @@ object OmronProtocol {
         val second: Int,
         val irregularHeartbeat: Boolean,
         val bodyMovement: Boolean,
+        /**
+         * True when the record's raw seconds field exceeded 59, i.e. it was written
+         * while the cuff's RTC was halted (see [CuffClock.halted]). The timestamp is
+         * not trustworthy and must not be used as a calibration join key.
+         *
+         * Additive field with a default so [takenAtIso] — and therefore the dedup
+         * identity in CuffStore — is unchanged.
+         */
+        val clockSuspect: Boolean = false,
     ) {
         /** Local-time ISO-8601 (no zone); the cuff stores naive local time. */
         fun takenAtIso(): String =
@@ -165,12 +174,18 @@ object OmronProtocol {
         val day = bitsBe(buf, 38, 42)
         val hour = bitsBe(buf, 43, 47)
         val minute = bitsBe(buf, 52, 57)
-        val second = minOf(bitsBe(buf, 58, 63), 59)
+        val secondRaw = bitsBe(buf, 58, 63)
+        // Clip for the timestamp (omblepy does the same) but keep the fact that the
+        // raw value was out of range: that is the halted-RTC sentinel.
+        val second = minOf(secondRaw, 59)
 
         require(month in 1..12 && day in 1..31 && hour in 0..23 && minute in 0..59) {
             "record decoded to invalid datetime $year-$month-$day $hour:$minute:$second"
         }
-        return CuffReading(sys, dia, bpm, year, month, day, hour, minute, second, ihb, mov)
+        return CuffReading(
+            sys, dia, bpm, year, month, day, hour, minute, second, ihb, mov,
+            clockSuspect = secondRaw > 59,
+        )
     }
 
     // ---- ring-buffer read planning ----
@@ -201,6 +216,100 @@ object OmronProtocol {
         val tail = EepromRead(userStartAddr + (userRecordCount - wrap) * recordSize, wrap * recordSize)
         return listOf(tail, head)
     }
+
+    // ---- cuff clock (settings time-sync block) ----
+
+    const val TIME_SYNC_BLOCK_SIZE = 10
+
+    /**
+     * Decoded cuff clock from the 10-byte settings time-sync block.
+     *
+     * [secondRaw] is the unclipped seconds field. The field is 6 bits wide, so it
+     * can hold 0..63 while a legal seconds value is 0..59. Hardware test
+     * 2026-07-26: after a battery pull the cuff halts its RTC and writes
+     * `secondRaw == 0x3F` (63) with a *valid* checksum — a deliberate
+     * "clock not set" sentinel, not corruption. Never clip this away; it is the
+     * only in-band signal that the timestamp cannot be trusted.
+     */
+    data class CuffClock(
+        val year: Int,
+        val month: Int,
+        val day: Int,
+        val hour: Int,
+        val minute: Int,
+        val second: Int,
+        val secondRaw: Int,
+        val checksumOk: Boolean,
+    ) {
+        /** True when the seconds field carries the halted-clock sentinel. */
+        val halted: Boolean get() = secondRaw > 59
+
+        /** Only trust the timestamp when the checksum verifies and all fields are in range. */
+        val valid: Boolean
+            get() = checksumOk && !halted &&
+                month in 1..12 && day in 1..31 &&
+                hour in 0..23 && minute in 0..59
+
+        fun iso(): String =
+            "%04d-%02d-%02dT%02d:%02d:%02d".format(year, month, day, hour, minute, second)
+    }
+
+    /**
+     * Encode the 10-byte time-sync block.
+     *
+     * Layout (verified on hardware, four samples 2026-07-26):
+     * `[A0][C0][month][year-2000][hour][day][second][minute][~sum][sum]`
+     *
+     * The trailing pair is a checksum over bytes 0..7 only: byte 9 is the low byte
+     * of the sum, byte 8 is its one's complement, so `byte8 + byte9 == 0xFF`.
+     */
+    fun encodeTimeSync(
+        year: Int,
+        month: Int,
+        day: Int,
+        hour: Int,
+        minute: Int,
+        second: Int,
+    ): ByteArray {
+        require(year in 2000..2255) { "year $year out of range" }
+        require(month in 1..12) { "month $month out of range" }
+        require(day in 1..31) { "day $day out of range" }
+        require(hour in 0..23) { "hour $hour out of range" }
+        require(minute in 0..59) { "minute $minute out of range" }
+        require(second in 0..59) { "second $second out of range" }
+        val body = byteArrayOf(
+            0xA0.toByte(), 0xC0.toByte(),
+            month.toByte(), (year - 2000).toByte(),
+            hour.toByte(), day.toByte(),
+            second.toByte(), minute.toByte(),
+        )
+        val sum = body.fold(0) { acc, b -> acc + (b.toInt() and 0xFF) } and 0xFF
+        return body + byteArrayOf(((0xFF - sum) and 0xFF).toByte(), sum.toByte())
+    }
+
+    /** Decode the 10-byte time-sync block. Does not throw on an invalid clock. */
+    fun parseTimeSync(block: ByteArray): CuffClock {
+        require(block.size == TIME_SYNC_BLOCK_SIZE) {
+            "time block must be $TIME_SYNC_BLOCK_SIZE bytes, got ${block.size}"
+        }
+        fun u(i: Int) = block[i].toInt() and 0xFF
+        val sum = (0 until 8).fold(0) { acc, i -> acc + u(i) } and 0xFF
+        val checksumOk = u(9) == sum && ((u(8) + u(9)) and 0xFF) == 0xFF
+        val secondRaw = u(6)
+        return CuffClock(
+            year = 2000 + u(3),
+            month = u(2),
+            day = u(5),
+            hour = u(4),
+            minute = u(7),
+            second = minOf(secondRaw, 59),
+            secondRaw = secondRaw,
+            checksumOk = checksumOk,
+        )
+    }
+
+    /** Absolute EEPROM address the time block is written to (settings *write* mirror). */
+    fun timeSyncWriteAddress(): Int = SETTINGS_WRITE_ADDR + TIME_SYNC_RANGE.first
 
     // ---- hex helpers ----
 

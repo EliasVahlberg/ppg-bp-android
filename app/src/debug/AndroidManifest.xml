@@ -17,6 +17,7 @@
                 <action android:name="com.polarppgbp.debug.SYNC_NOW" />
                 <action android:name="com.polarppgbp.debug.READ_CUFF" />
                 <action android:name="com.polarppgbp.debug.READ_CUFF_SETTINGS" />
+                <action android:name="com.polarppgbp.debug.WRITE_CUFF_TIME" />
                 <action android:name="com.polarppgbp.debug.PAIR_CUFF" />
                 <action android:name="com.polarppgbp.debug.GET_SETTINGS" />
                 <action android:name="com.polarppgbp.debug.SET_PROFILE" />
