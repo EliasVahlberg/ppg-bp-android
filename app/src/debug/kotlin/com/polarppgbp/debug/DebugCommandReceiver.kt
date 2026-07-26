@@ -160,11 +160,18 @@ class DebugCommandReceiver : BroadcastReceiver() {
                             context.applicationContext,
                             onStatus = { Log.i(TAG, "cuff: $it") },
                         )
-                        val readings = if (pair) client.pairAndRead(address) else client.readRecords(address)
+                        val result = if (pair) client.pairAndRead(address) else client.readRecords(address)
+                        val readings = result.readings
                         val store = com.polarppgbp.omron.CuffStore(java.io.File(context.filesDir, "cuff"))
-                        val res = store.ingest(readings, address)
+                        val res = store.ingest(readings, address, result.clock)
                         Log.i(TAG, "${intent.action}: ${readings.size} on cuff, ${res.newCount} new, ${res.total} stored total")
                         Log.i(TAG, "  stored at ${res.path}")
+                        // #9: drift is only useful if it is visible.
+                        Log.i(TAG, "  CLOCK ${result.clock.detail}")
+                        Log.i(TAG, "  clock json ${result.clock.toJson()}")
+                        if (res.quarantinedCount > 0) {
+                            Log.w(TAG, "  QUARANTINED ${res.quarantinedCount} reading(s) with an untrustworthy timestamp")
+                        }
                         SyncScheduler.enqueueCuff(context.applicationContext)
                         // Sort before taking the tail: decodeRegion() returns
                         // records in ring-buffer *slot* order, not chronological

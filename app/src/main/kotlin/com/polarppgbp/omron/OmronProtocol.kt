@@ -143,6 +143,15 @@ object OmronProtocol {
          * identity in CuffStore — is unchanged.
          */
         val clockSuspect: Boolean = false,
+        /**
+         * Ring-buffer slot this record came from, or -1 when unknown. Needed to identify
+         * a reading whose timestamp cannot be trusted, since [takenAtIso] is then not a
+         * usable identity. Defaulted, so the dedup identity is unaffected.
+         *
+         * Not stable across buffer wrap: slot 0 is reused once 100 readings are exceeded
+         * (#10).
+         */
+        val slotIndex: Int = -1,
     ) {
         /** Local-time ISO-8601 (no zone); the cuff stores naive local time. */
         fun takenAtIso(): String =

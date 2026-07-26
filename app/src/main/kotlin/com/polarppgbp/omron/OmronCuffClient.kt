@@ -115,8 +115,23 @@ class OmronCuffClient(
 
     // ----------------------------------------------------------- public
 
-    /** Connect, unlock, read the full record ring buffer, decode, disconnect. */
-    suspend fun readRecords(deviceAddress: String? = null): List<OmronProtocol.CuffReading> {
+    /**
+     * A record read plus the clock comparison taken during the same connection.
+     *
+     * The clock read is folded in here rather than exposed as a separate call because
+     * the cuff sleeps within about a minute of the transfer button being pressed, so a
+     * second connection would need a second button press -- and because a caller that
+     * can forget to measure drift is a caller that will (#9).
+     */
+    data class CuffReadResult(
+        val readings: List<OmronProtocol.CuffReading>,
+        val clock: CuffClockObservation,
+    )
+
+    /**
+     * Connect, unlock, read the full record ring buffer and the cuff clock, disconnect.
+     */
+    suspend fun readRecords(deviceAddress: String? = null): CuffReadResult {
         val device = resolveDevice(deviceAddress)
         onStatus("Connecting to ${device.address}")
         try {
@@ -132,12 +147,42 @@ class OmronCuffClient(
                 OmronProtocol.USER_RECORDS_ADDR,
                 OmronProtocol.USER_RECORDS_COUNT * OmronProtocol.RECORD_SIZE,
             )
+            val clock = observeClock()
             endTransmission()
             val readings = decodeRegion(region)
-            onStatus("Read ${readings.size} record(s)")
-            return readings
+            onStatus("Read ${readings.size} record(s). ${clock.detail}")
+            return CuffReadResult(readings, clock)
         } finally {
             close()
+        }
+    }
+
+    /**
+     * Read the cuff's own clock and compare it to the phone, bracketing the BLE read
+     * with phone timestamps so the measurement carries its own uncertainty.
+     *
+     * Must be called inside an open transmission session. Never throws: a failed clock
+     * read degrades to an observation with `clockValid = false` rather than losing the
+     * records that were just read successfully.
+     */
+    private suspend fun observeClock(): CuffClockObservation {
+        val before = System.currentTimeMillis()
+        val clock = try {
+            val region = readRegion(OmronProtocol.SETTINGS_READ_ADDR, OmronProtocol.TRANSMISSION_BLOCK_SIZE)
+            val (from, to) = OmronProtocol.TIME_SYNC_RANGE
+            if (region.size < to) {
+                Log.w(TAG, "settings region too short for the clock block: ${region.size}")
+                null
+            } else {
+                OmronProtocol.parseTimeSync(region.copyOfRange(from, from + OmronProtocol.TIME_SYNC_BLOCK_SIZE))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "clock read failed: ${e.message}")
+            null
+        }
+        val after = System.currentTimeMillis()
+        return CuffClockObservation.of(clock, before, after).also {
+            Log.i(TAG, "clock: ${it.detail} (offset=${it.offsetSeconds}s valid=${it.clockValid})")
         }
     }
 
@@ -326,7 +371,7 @@ class OmronCuffClient(
      * -P- key-programming mode, display blinking "P"), finalise per omblepy, then
      * read records in the same session. Mirrors cuff.py OmronEvolvCuff.pair().
      */
-    suspend fun pairAndRead(deviceAddress: String? = null): List<OmronProtocol.CuffReading> {
+    suspend fun pairAndRead(deviceAddress: String? = null): CuffReadResult {
         val device = resolveDevice(deviceAddress)
         onStatus("Pairing with ${device.address} (cuff must blink 'P')")
         try {
@@ -350,10 +395,11 @@ class OmronCuffClient(
                 OmronProtocol.USER_RECORDS_ADDR,
                 OmronProtocol.USER_RECORDS_COUNT * OmronProtocol.RECORD_SIZE,
             )
+            val clock = observeClock()
             endTransmission()
             val readings = decodeRegion(region)
-            onStatus("Paired + read ${readings.size} record(s)")
-            return readings
+            onStatus("Paired + read ${readings.size} record(s). ${clock.detail}")
+            return CuffReadResult(readings, clock)
         } finally {
             close()
         }
@@ -622,8 +668,9 @@ class OmronCuffClient(
         var offset = 0
         while (offset + OmronProtocol.RECORD_SIZE <= buffer.size) {
             val chunk = buffer.copyOfRange(offset, offset + OmronProtocol.RECORD_SIZE)
+            val slot = offset / OmronProtocol.RECORD_SIZE
             try {
-                OmronProtocol.parseRecord(chunk)?.let { out.add(it) }
+                OmronProtocol.parseRecord(chunk)?.let { out.add(it.copy(slotIndex = slot)) }
             } catch (e: Exception) {
                 Log.w(TAG, "skip bad record @${offset}: ${e.message}")
             }

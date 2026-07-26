@@ -48,6 +48,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.polarppgbp.omron.CuffClockObservation
 import com.polarppgbp.omron.CuffStore
 import com.polarppgbp.omron.OmronCuffClient
 import com.polarppgbp.settings.ProfileChoice
@@ -827,15 +828,27 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
             try {
                 // StateFlow.value is thread-safe; onStatus fires from the BLE thread.
                 val client = OmronCuffClient(context, onStatus = { _cuffStatus.value = "Cuff: $it" })
-                val readings = withContext(Dispatchers.IO) {
+                val result = withContext(Dispatchers.IO) {
                     if (pair) client.pairAndRead(null) else client.readRecords(null)
                 }
+                val readings = result.readings
                 val res = withContext(Dispatchers.IO) {
-                    CuffStore(File(context.filesDir, "cuff")).ingest(readings, null)
+                    CuffStore(File(context.filesDir, "cuff")).ingest(readings, null, result.clock)
                 }
                 SyncScheduler.enqueueCuff(context)
+                // #9: surface clock trouble in the UI. Silent drift is the failure mode
+                // this issue exists to prevent, so it must not be log-only.
+                val clockNote = when {
+                    !result.clock.clockValid -> " · ⚠ ${result.clock.detail}"
+                    result.clock.exceeds(CuffClockObservation.NOTABLE_DRIFT_SECONDS) ->
+                        " · ⚠ ${result.clock.detail}"
+                    else -> ""
+                }
+                val quarantineNote =
+                    if (res.quarantinedCount > 0) " · ${res.quarantinedCount} quarantined" else ""
                 _cuffStatus.value =
-                    "Cuff: ${readings.size} read · ${res.newCount} new · ${res.total} stored (uploading)"
+                    "Cuff: ${readings.size} read · ${res.newCount} new · ${res.total} stored" +
+                        quarantineNote + clockNote
             } catch (e: Exception) {
                 _cuffStatus.value = "Cuff failed: ${e.message}"
             } finally {
