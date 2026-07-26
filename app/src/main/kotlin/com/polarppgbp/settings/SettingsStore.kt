@@ -18,6 +18,7 @@
 package com.polarppgbp.settings
 
 import android.content.Context
+import com.polarppgbp.KEY_DEVICE_ID
 import com.polarppgbp.KEY_SERVER_TOKEN
 import com.polarppgbp.KEY_SERVER_URL
 import com.polarppgbp.PREFS_NAME
@@ -28,6 +29,7 @@ const val KEY_PROFILE_NAME = "settings_profile_name"
 const val KEY_CUSTOM_PPG_HZ = "settings_custom_ppg_hz"
 const val KEY_CUSTOM_ACC_HZ = "settings_custom_acc_hz"
 const val KEY_CUSTOM_GYRO_HZ = "settings_custom_gyro_hz"
+const val KEY_ROTATION_MINUTES = "settings_rotation_minutes"
 
 /** Candidate sample rates per sensor, from the Polar Verity Sense online
  * streaming spec (docs/products/PolarVeritySense.md in the SDK reference,
@@ -153,6 +155,39 @@ class SettingsStore(context: Context) {
 
     /** Resets profile + custom rates to RecordingSettings.DEFAULT. Does not
      * touch unrelated prefs (device id, server url/token). */
+    // ------------------------------------------------------------------ #3 device
+
+    /**
+     * The Polar unit this phone binds to, remembered on first connect. Exposed so a user
+     * can see which sensor they are bound to and unbind from a different one without ADB
+     * or reinstalling.
+     */
+    fun getDeviceId(): String? = prefs.getString(KEY_DEVICE_ID, null)?.takeIf { it.isNotBlank() }
+
+    /**
+     * Forget the paired Polar. Does not touch recordings: sessions are named by device at
+     * write time, so dropping the binding cannot orphan existing data.
+     */
+    fun clearDeviceId() {
+        prefs.edit().remove(KEY_DEVICE_ID).apply()
+    }
+
+    // ---------------------------------------------------------------- #3 advanced
+
+    /**
+     * How often the session writer starts a new file. Shorter rotation limits how much a
+     * single truncated file can cost if the process dies mid-write; longer rotation means
+     * fewer files to sync. 15 minutes is the long-standing default.
+     */
+    fun getRotationPeriodMinutes(): Int =
+        prefs.getInt(KEY_ROTATION_MINUTES, RotationPeriod.DEFAULT_MINUTES)
+
+    fun setRotationPeriodMinutes(minutes: Int) {
+        val valid = RotationPeriod.normalise(minutes)
+            ?: throw IllegalArgumentException("invalid rotation period: $minutes")
+        prefs.edit().putInt(KEY_ROTATION_MINUTES, valid).apply()
+    }
+
     fun resetToDefaults() {
         val default = RecordingSettings.DEFAULT
         prefs.edit()

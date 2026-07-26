@@ -35,6 +35,7 @@ import com.polar.sdk.api.model.PolarGyroData
 import com.polar.sdk.api.model.PolarSensorSetting
 import com.polar.sdk.api.model.PolarSensorSetting.SettingType
 import com.polarppgbp.recorder.Profile
+import com.polarppgbp.settings.RotationPeriod
 import com.polarppgbp.recorder.SessionWriter
 import com.polarppgbp.rop.SensorType
 import com.polarppgbp.rop.packAcc
@@ -216,7 +217,10 @@ class PolarRepository(context: Context) {
     // --------------------------------------------------------- session API
 
     /** Open a new session bundle. Call before connecting. */
-    fun startSession(profile: Profile) {
+    /**
+     * @param rotationPeriodMinutes how often to start a new file; user-configurable (#3).
+     */
+    fun startSession(profile: Profile, rotationPeriodMinutes: Int = RotationPeriod.DEFAULT_MINUTES) {
         activeProfile = profile
         segmentId = 0
         _metrics.value = LiveMetrics()
@@ -231,7 +235,7 @@ class PolarRepository(context: Context) {
             deviceName = deviceName,
             deviceAddress = deviceAddress,
             startedAtEpochSec = nowSec(),
-            rotationPeriodMinutes = 15,
+            rotationPeriodMinutes = rotationPeriodMinutes,
         )
         _recording.value = true
         Log.i(TAG, "Started session ${dir.absolutePath}")

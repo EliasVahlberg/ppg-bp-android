@@ -56,6 +56,7 @@ import com.polarppgbp.omron.CuffStore
 import com.polarppgbp.omron.OmronCuffClient
 import com.polarppgbp.settings.ProfileChoice
 import com.polarppgbp.settings.RecordingSettings
+import com.polarppgbp.settings.RotationPeriod
 import com.polarppgbp.settings.ServerConfig
 import com.polarppgbp.settings.ServerConfigResult
 import com.polarppgbp.settings.SettingsStore
@@ -207,6 +208,7 @@ class MainActivity : ComponentActivity() {
         // Server config can change outside the ViewModel (debug broadcast, or a return
         // from another screen), so re-read it rather than trusting cached state.
         viewModel.refreshServerState()
+        viewModel.refreshDeviceAndAdvanced()
         viewModel.refreshSessions()
     }
 }
@@ -460,6 +462,99 @@ private fun RecorderScreen(
  * palette, JetBrains Mono for the Hz readouts, consistent Spacing scale.
  */
 /**
+ * #3: the paired Polar, viewable and clearable without ADB or a reinstall. Previously the
+ * binding was written automatically on connect with no way to see or change it, so moving
+ * to a second sensor meant clearing app data.
+ */
+@Composable
+private fun DeviceSection(viewModel: MainViewModel) {
+    var confirming by remember { mutableStateOf(false) }
+    Text("Polar sensor", style = MaterialTheme.typography.titleMedium)
+    val id = viewModel.pairedDeviceId
+    if (id == null) {
+        Text(
+            "No sensor paired. Connect once and this phone will remember it.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    } else {
+        Text("Paired: $id", style = MaterialTheme.typography.bodySmall)
+        OutlinedButton(onClick = { confirming = true }) { Text("Forget sensor") }
+    }
+
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Forget $id?") },
+            text = {
+                Text(
+                    "Recordings already on this phone are kept — each session records which " +
+                        "sensor it came from.\n\nThe next recording will need a sensor to be " +
+                        "connected first.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirming = false
+                    viewModel.forgetDevice()
+                }) { Text("Forget") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+/**
+ * #3: session-file rotation period, previously a hardcoded 15 in PolarRepository.
+ */
+@Composable
+private fun AdvancedSection(viewModel: MainViewModel) {
+    var raw by remember(viewModel.rotationMinutes) {
+        mutableStateOf(viewModel.rotationMinutes.toString())
+    }
+    var error by remember { mutableStateOf<String?>(null) }
+    var saved by remember { mutableStateOf(false) }
+
+    Text("Advanced", style = MaterialTheme.typography.titleMedium)
+    Text(
+        "Recordings are split into files as they are written. Shorter periods limit how " +
+            "much one interrupted file can cost; longer periods mean fewer files to sync.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    OutlinedTextField(
+        value = raw,
+        onValueChange = { raw = it; error = null; saved = false },
+        label = { Text("File rotation (minutes)") },
+        isError = error != null,
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        RotationPeriod.PRESETS.forEach { preset ->
+            OutlinedButton(onClick = { raw = preset.toString(); error = null; saved = false }) {
+                Text("$preset")
+            }
+        }
+    }
+    error?.let {
+        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+    }
+    if (saved) {
+        Text(
+            "Saved: ${RotationPeriod.describe(viewModel.rotationMinutes)}. Applies to the next " +
+                "recording.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+    Button(onClick = {
+        val err = viewModel.setRotationMinutes(raw)
+        error = err
+        saved = err == null
+    }) { Text("Save rotation") }
+}
+
+/**
  * Server section of the settings screen (#15).
  *
  * Before this existed the server was only settable over ADB, so a release build could
@@ -671,6 +766,10 @@ private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
 
             Spacer(Modifier.height(Spacing.sm))
             ServerSection(viewModel)
+            Spacer(Modifier.height(Spacing.sm))
+            DeviceSection(viewModel)
+            Spacer(Modifier.height(Spacing.sm))
+            AdvancedSection(viewModel)
 
             Spacer(Modifier.height(Spacing.lg))
 
@@ -804,6 +903,35 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
     fun clearServer() {
         settingsStore.clearServer()
         refreshServerState()
+    }
+
+    // ------------------------------------------------------------------ #3
+
+    var pairedDeviceId: String? by mutableStateOf(null)
+        private set
+    var rotationMinutes: Int by mutableStateOf(RotationPeriod.DEFAULT_MINUTES)
+        private set
+
+    fun refreshDeviceAndAdvanced() {
+        pairedDeviceId = settingsStore.getDeviceId()
+        rotationMinutes = settingsStore.getRotationPeriodMinutes()
+    }
+
+    /**
+     * Forget the paired Polar. Recordings are untouched -- sessions record their device at
+     * write time, so dropping the binding cannot orphan existing data.
+     */
+    fun forgetDevice() {
+        settingsStore.clearDeviceId()
+        refreshDeviceAndAdvanced()
+    }
+
+    /** Returns an error message, or null on success. */
+    fun setRotationMinutes(raw: String): String? {
+        val parsed = RotationPeriod.parse(raw) ?: return RotationPeriod.errorFor(raw)
+        settingsStore.setRotationPeriodMinutes(parsed)
+        refreshDeviceAndAdvanced()
+        return null
     }
 
     /** #16: last health-check result, null until the user runs one. */

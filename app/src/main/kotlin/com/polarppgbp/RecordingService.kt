@@ -17,6 +17,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.polarppgbp.recorder.Profile
+import com.polarppgbp.settings.SettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
@@ -122,7 +123,10 @@ class RecordingService : Service() {
                 } else {
                     com.polarppgbp.settings.SettingsStore(this).get().toProfile()
                 }
-                SharedRepo.repo?.startSession(profile)
+                SharedRepo.repo?.startSession(
+                    profile,
+                    SettingsStore(applicationContext).getRotationPeriodMinutes(),
+                )
                 Log.i(TAG, "Auto-connecting to device: $lastDeviceId (profile=${profile.name})")
                 SharedRepo.deviceId = lastDeviceId
                 SharedRepo.repo?.connect(lastDeviceId)
