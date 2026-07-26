@@ -155,7 +155,11 @@ def test_sync_uploads_to_server(clean_log: Device, e2e_config: E2EConfig):
     assert match, f"couldn't find session dir in:\n{log}"
     session_dir = match.group(1)
 
-    sync_log = device.wait_for_log(r'SyncWorker: synced .* "status":"complete"', timeout=30.0)
+    # NB: no space before "status" -- the server serialises CompleteResponse as
+    # compact JSON (`...uuid","status":"complete"`). An earlier version of this
+    # pattern had ` "status"` with a leading space and could therefore never
+    # match, so this test failed while sync was in fact working correctly.
+    sync_log = device.wait_for_log(r'SyncWorker: synced .*"status":"complete"', timeout=60.0)
     assert '"status":"complete"' in sync_log
 
     counts_match = re.search(r'"samples_per_sensor":\{"ppg":(\d+),"acc":(\d+),"gyro":(\d+)', sync_log)

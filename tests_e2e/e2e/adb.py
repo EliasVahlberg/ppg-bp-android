@@ -12,14 +12,19 @@ Two gotchas this module bakes in so nobody has to rediscover them:
     an app that isn't in the foreground. Without this flag the broadcast
     reports `result=0` (delivered) but the receiver's `onReceive` never
     fires -- a confusing false-positive.
-  * `adb logcat` with no bound (no `-d`, no `timeout`) blocks forever and
-    will hang a test run or an agent's terminal. Every log read here is
-    either a bounded `-d` snapshot or wrapped in `timeout`.
+  * `adb logcat` must never be left unbounded -- a bare `adb logcat` blocks
+    forever and will hang a test run or an agent's terminal. Reads here are
+    either a bounded `-d` snapshot, or a streaming read with a hard deadline
+    that always kills the subprocess on exit (see `wait_for_log`).
+  * The stock 256 KiB logcat buffer is too small on chatty OEM ROMs to read
+    back reliably, so the suite enlarges it and `wait_for_log` streams
+    instead of polling snapshots. See `wait_for_log` for the full story.
 """
 
 from __future__ import annotations
 
 import re
+import selectors
 import subprocess
 import time
 from dataclasses import dataclass
@@ -27,6 +32,13 @@ from pathlib import Path
 
 PACKAGE = "com.polarppgbp"
 DEBUG_ACTION_PREFIX = f"{PACKAGE}.debug"
+
+# Enlarged logcat ring buffer, applied once per session by the `device`
+# fixture. The stock 256 KiB main buffer is far too small on chatty OEM
+# ROMs -- a OnePlus 9 Pro on OxygenOS writes ~63 KiB (~470 lines) every 20 s
+# while *idle*, so under recording load the buffer holds only ~20-30 s of
+# history and a log line can be evicted seconds after it is written.
+LOG_BUFFER_SIZE = "16M"
 
 
 class AdbError(RuntimeError):
@@ -73,20 +85,69 @@ class Device:
         return out
 
     def wait_for_log(self, pattern: str, *, timeout: float = 20.0, poll_interval: float = 1.0) -> str:
-        """Poll bounded log snapshots for `pattern`. Never blocks indefinitely."""
+        """Stream logcat until `pattern` appears, or raise TimeoutError.
+
+        Streams (`adb logcat`, which dumps existing buffer then follows)
+        rather than repeatedly dumping snapshots with `logcat -d`.
+
+        The snapshot approach loses lines: this device's stock main buffer is
+        256 KiB and OxygenOS writes ~63 KiB every 20 s even while idle, so
+        under recording load the buffer spans only ~20-30 s. A line written a
+        few seconds before a poll could already be evicted by the time that
+        poll's dump ran -- which made test_sync_uploads_to_server fail while
+        sync was in fact working perfectly (the SyncWorker success line was
+        confirmed present in an independent capture, 29 s before the failing
+        snapshot's oldest entry).
+
+        Streaming cannot miss a line that arrives inside the window, because
+        lines are read as they are produced rather than after the fact.
+
+        `poll_interval` is accepted for backwards compatibility and unused.
+        The subprocess is always killed on exit, so this never blocks
+        indefinitely the way a bare `adb logcat` does.
+        """
+        del poll_interval  # kept for call-site compatibility
         regex = re.compile(pattern)
+        cmd = [self.adb_path, "-s", self.serial, "logcat"]
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, bufsize=1,
+        )
+        collected: list[str] = []
         deadline = time.monotonic() + timeout
-        last_snapshot = ""
-        while time.monotonic() < deadline:
-            last_snapshot = self.log_snapshot()
-            match = regex.search(last_snapshot)
-            if match:
-                return last_snapshot
-            time.sleep(poll_interval)
+        try:
+            selector = selectors.DefaultSelector()
+            selector.register(proc.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                if not selector.select(timeout=min(remaining, 1.0)):
+                    continue
+                line = proc.stdout.readline()
+                if not line:  # stream closed
+                    break
+                collected.append(line)
+                if regex.search(line):
+                    return "".join(collected)
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+
+        snapshot = "".join(collected)
         raise TimeoutError(
             f"pattern {pattern!r} not seen in logcat within {timeout}s.\n"
-            f"Last snapshot tail:\n{last_snapshot[-2000:]}"
+            f"Streamed {len(collected)} lines. Tail:\n{snapshot[-2000:]}"
         )
+
+    def set_log_buffer_size(self, size: str = LOG_BUFFER_SIZE) -> None:
+        """Enlarge the logcat ring buffer for the rest of the session.
+
+        Not persistent across a device reboot, which is fine -- the fixture
+        reapplies it. Guards against the eviction problem described in
+        wait_for_log() for any code still reading `-d` snapshots.
+        """
+        self._adb("logcat", "-G", size)
 
     def is_app_running(self) -> bool:
         out = self._adb("shell", "pidof", PACKAGE)
@@ -191,8 +252,17 @@ class Device:
         self._adb("pull", remote_path, str(local_path), timeout=60.0)
 
     def ls(self, remote_path: str) -> list[str]:
-        out = self._adb("shell", "ls", "-1", remote_path)
-        return [line.strip() for line in out.splitlines() if line.strip()]
+        """List a directory, including dotfiles.
+
+        Uses `ls -1a`, not `ls -1`: the sync marker is `.synced` and plain
+        `ls -1` hides dotfiles, so a marker that was correctly written looked
+        absent. `.` and `..` are filtered out so callers see only real entries.
+        """
+        out = self._adb("shell", "ls", "-1a", remote_path)
+        return [
+            line.strip() for line in out.splitlines()
+            if line.strip() and line.strip() not in (".", "..")
+        ]
 
     def cat(self, remote_path: str) -> str:
         return self._adb("shell", "cat", remote_path)

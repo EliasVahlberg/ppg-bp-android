@@ -45,6 +45,12 @@ def device(e2e_config: E2EConfig) -> Device:
 
     dev = Device(serial=serial, adb_path=e2e_config.adb_path)
 
+    # Enlarge the logcat ring buffer before anything reads logs. The stock
+    # 256 KiB main buffer holds only ~20-30 s of history on a chatty OEM ROM
+    # under recording load, which is short enough to lose a line between it
+    # being written and a test looking for it.
+    dev.set_log_buffer_size()
+
     if e2e_config.apk_path:
         dev.install(e2e_config.apk_path)
 
