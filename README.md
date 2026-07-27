@@ -40,7 +40,7 @@ Each sensor's BLE stream startup is wrapped in a retry-with-backoff loop, not a 
 
 ## Debug harness
 
-A debug-only source set (`src/debug/`, excluded from release builds) exposes an ADB broadcast interface to drive the app without touching the UI — useful for wireless-ADB testing where you don't have a screen in front of you.
+A debug-only source set (`src/debug/`, compiled into `debug` and `releaseTest` only, never into a shipping release) exposes an ADB broadcast interface to drive the app without touching the UI — useful for wireless-ADB testing where you don't have a screen in front of you.
 
 **Every one of these needs `--receiver-include-background`.** Without it Android silently drops delivery to an app that isn't in the foreground: `am broadcast` still prints `result=0` as if it worked, but `onReceive` never fires. Confirmed on Android 14. The e2e suite bakes the flag in (`tests_e2e/e2e/adb.py`); these examples previously omitted it and did nothing.
 
@@ -52,6 +52,8 @@ $B com.polarppgbp.debug.STOP_RECORDING
 $B com.polarppgbp.debug.STATUS
 $B com.polarppgbp.debug.SYNC_NOW
 $B com.polarppgbp.debug.SET_SERVER --es url http://<host>:8000 --es token <token>
+$B com.polarppgbp.debug.SET_DEVICE_ID --es id <your-polar-serial>
+$B com.polarppgbp.debug.CHECK_SERVER
 $B com.polarppgbp.debug.PAIR_CUFF
 $B com.polarppgbp.debug.READ_CUFF
 ```
@@ -94,6 +96,21 @@ This app targets specific devices. Used as-is, with no code changes, you need al
 
 A cuff is not optional for BP estimation. PPG gives you waveform morphology, not pressure — without paired cuff readings there is nothing to calibrate against, and the app will only ever be a raw-signal recorder.
 
+## Installing
+
+Signed release APKs are published on the [Releases page](https://github.com/EliasVahlberg/ppg-bp-android/releases). Android 13 or newer is required (see the hardware table below).
+
+The maintainable route is [Obtainium](https://github.com/ImranR98/Obtainium), which tracks this repository's releases and offers updates on the phone without a developer, a USB cable or an app store account. Add an app source with this repository's URL, pick the APK asset, and enable update notifications. The repository is public, so no token is needed.
+
+Direct install works too: download the APK from a release and open it. Android will ask for permission to install from an unknown source once.
+
+Two things worth knowing before you install on a phone you care about:
+
+- **Releases from v0.2.0 onward are signed with a project key**, so they update in place and keep app data. Anything built before that on a developer machine was signed with a per-machine debug key and cannot be updated over. Android will refuse with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, and uninstalling to resolve it erases staged sessions and the local cuff store. Sync first.
+- **The Omron bond is not app data.** It lives in the Android Bluetooth stack, so it survives both updates and uninstalls. The cuff's unlock key lives in the cuff's own EEPROM. Neither needs re-pairing after an app update.
+
+On first launch a setup screen requests Bluetooth permissions, notifications and the battery-optimisation exemption, and blocks recording until they are granted. The exemption matters more than it sounds: without it Android may pause or kill a long recording on an idle phone with no warning and no error, which looks like missing data rather than a failure.
+
 ## Building
 
 ```bash
@@ -102,6 +119,19 @@ export ANDROID_HOME=/path/to/Android/Sdk
 ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+### Release builds
+
+A release build needs signing credentials, supplied as Gradle properties (`-PreleaseStoreFile=...`), in a gitignored `local.properties`, or as environment variables (`PPG_BP_STORE_FILE`, `PPG_BP_STORE_PASSWORD`, `PPG_BP_KEY_ALIAS`, `PPG_BP_KEY_PASSWORD`). See `local.properties.example`. Without them the build still succeeds but produces an unsigned APK and says so.
+
+Note that a PKCS12 keystore cannot hold a key password different from the store password. `keytool` accepts `-keypass` and silently keeps the store password, and the mismatch only surfaces much later as `Failed to read key ... Given final block not properly padded` during packaging. Use one password for both.
+
+```bash
+./gradlew assembleRelease       # shipping artifact
+./gradlew assembleReleaseTest   # same R8 config, with the debug harness compiled in
+```
+
+`releaseTest` exists because a shipping release build deliberately cannot be driven over ADB, which makes the minified build hard to verify. Reaching a broadcast receiver with `am broadcast` requires it to be exported, since `adb shell` runs as a different app identity — and an exported receiver with no permission gate is callable by any app on the phone, which for `SET_SERVER` means silently repointing the upload URL and token. Release builds are also not debuggable, so `run-as` is unavailable. `releaseTest` keeps the release minification, keep rules and signing key, and reuses `src/debug/` verbatim so the harness cannot drift from the debug build. Never distribute it.
 
 ## License
 
