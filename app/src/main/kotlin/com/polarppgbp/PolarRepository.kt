@@ -35,6 +35,8 @@ import com.polar.sdk.api.model.PolarGyroData
 import com.polar.sdk.api.model.PolarSensorSetting
 import com.polar.sdk.api.model.PolarSensorSetting.SettingType
 import com.polarppgbp.recorder.Profile
+import com.polarppgbp.recorder.StreamWatchdog
+import com.polarppgbp.recorder.WatchdogVerdict
 import com.polarppgbp.settings.RotationPeriod
 import com.polarppgbp.recorder.SessionWriter
 import com.polarppgbp.rop.SensorType
@@ -83,11 +85,21 @@ data class LiveMetrics(
     val ppgSamples: Long = 0,
     val accSamples: Long = 0,
     val gyroSamples: Long = 0,
+    /**
+     * #19: sensors the watchdog found silent. Non-empty means this recording is
+     * missing data for those sensors right now, whatever the connection state says.
+     */
+    val silentSensors: Set<SensorType> = emptySet(),
+    /** Human-readable version of the above, null when nothing is wrong. */
+    val streamWarning: String? = null,
 )
 
 /** Thrown by chooseSetting() when a requested sample rate isn't offered by
  * the connected device (#1: configuration errors should fail loudly, not
  * silently fall back to a different rate). */
+/** How often the #19 watchdog samples the counters. Cheap: it reads a StateFlow. */
+private const val WATCHDOG_POLL_MS = 1_000L
+
 class UnsupportedRateException(val requestedHz: Int, val availableHz: Set<Int>) :
     Exception("requested ${requestedHz}Hz not in $availableHz")
 
@@ -133,6 +145,7 @@ class PolarRepository(context: Context) {
     private var ppgJob: Job? = null
     private var accJob: Job? = null
     private var gyroJob: Job? = null
+    private var watchdogJob: Job? = null
     private var searchJob: Job? = null
 
     init {
@@ -183,6 +196,7 @@ class PolarRepository(context: Context) {
                 ppgJob?.cancel(); ppgJob = null
                 accJob?.cancel(); accJob = null
                 gyroJob?.cancel(); gyroJob = null
+                watchdogJob?.cancel(); watchdogJob = null
                 session?.appendSegment(
                     event = "disconnect",
                     segmentId = segmentId,
@@ -206,6 +220,7 @@ class PolarRepository(context: Context) {
                     if (rates.containsKey(SensorType.PPG)) startPpgStream(identifier)
                     if (rates.containsKey(SensorType.ACC)) startAccStream(identifier)
                     if (rates.containsKey(SensorType.GYRO)) startGyroStream(identifier)
+                    startStreamWatchdog(identifier, rates.keys)
                 }
             }
 
@@ -442,6 +457,91 @@ class PolarRepository(context: Context) {
                 .collect { hrData: PolarHrData ->
                     hrData.samples.firstOrNull()?.hr?.let { if (it > 0) _metrics.value = _metrics.value.copy(hr = it) }
                 }
+        }
+    }
+
+    /**
+     * #19: watch per-sensor sample counts and act when a stream reports started but
+     * delivers nothing.
+     *
+     * Deliberately keyed on counts rather than connection state or heart rate. In all
+     * three observed occurrences the link was up and HR was arriving normally while the
+     * PMD streams produced nothing, so anything else would have looked healthy.
+     *
+     * One restart is attempted, because the failure has recovered on its own on a
+     * subsequent run and a restart is the cheapest thing that might reproduce that. If it
+     * does not help, stop trying and say so: a silent retry loop would hide the problem
+     * for the whole recording, which is exactly what happened before this existed.
+     */
+    private fun startStreamWatchdog(deviceId: String, expected: Set<SensorType>) {
+        watchdogJob?.cancel()
+        if (expected.isEmpty()) return
+        watchdogJob = scope.launch {
+            val startedAt = System.currentTimeMillis()
+            var restartedAtElapsed: Long? = null
+            var countsAtRestart: Map<SensorType, Long> = emptyMap()
+
+            while (isActive) {
+                delay(WATCHDOG_POLL_MS)
+                val m = _metrics.value
+                val counts = mapOf(
+                    SensorType.PPG to m.ppgSamples,
+                    SensorType.ACC to m.accSamples,
+                    SensorType.GYRO to m.gyroSamples,
+                )
+                val elapsed = System.currentTimeMillis() - startedAt
+                when (
+                    val verdict = StreamWatchdog.evaluate(
+                        counts = counts,
+                        expected = expected,
+                        elapsedSinceStartMs = elapsed,
+                        restartedAtElapsedMs = restartedAtElapsed,
+                        countsAtRestart = countsAtRestart,
+                    )
+                ) {
+                    is WatchdogVerdict.Waiting -> Unit
+
+                    is WatchdogVerdict.Healthy -> {
+                        if (_metrics.value.streamWarning != null) {
+                            _metrics.value = _metrics.value.copy(
+                                silentSensors = emptySet(),
+                                streamWarning = null,
+                            )
+                        }
+                        // Nothing more to prove once every stream has delivered.
+                        if (restartedAtElapsed != null) break
+                    }
+
+                    is WatchdogVerdict.Restart -> {
+                        Log.w(TAG, "WATCHDOG: no samples from ${verdict.silent} after ${elapsed}ms " +
+                            "(hr=${m.hr}) — restarting those streams (#19)")
+                        restartedAtElapsed = elapsed
+                        countsAtRestart = counts
+                        _metrics.value = _metrics.value.copy(
+                            silentSensors = verdict.silent,
+                            streamWarning = StreamWatchdog.describe(verdict.silent, recovered = true),
+                        )
+                        verdict.silent.forEach { sensor ->
+                            when (sensor) {
+                                SensorType.PPG -> startPpgStream(deviceId)
+                                SensorType.ACC -> startAccStream(deviceId)
+                                SensorType.GYRO -> startGyroStream(deviceId)
+                                else -> Unit
+                            }
+                        }
+                    }
+
+                    is WatchdogVerdict.Failed -> {
+                        Log.e(TAG, "WATCHDOG: ${verdict.silent} still silent after a restart " +
+                            "(${elapsed}ms, hr=${m.hr}) — this recording is missing those sensors (#19)")
+                        _metrics.value = _metrics.value.copy(
+                            silentSensors = verdict.silent,
+                            streamWarning = StreamWatchdog.describe(verdict.silent, recovered = false),
+                        )
+                        break
+                    }
+                }
+            }
         }
     }
 
