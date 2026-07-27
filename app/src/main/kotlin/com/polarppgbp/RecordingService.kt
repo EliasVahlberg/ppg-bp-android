@@ -94,7 +94,7 @@ class RecordingService : Service() {
                     // config error.
                     startForeground(NOTIF_ID, createNotification(ConnectionState.Idle, null))
                     Log.w(TAG, "No device ID configured (no prior pairing, no DEFAULT_DEVICE_ID build config). " +
-                        "Use the debug SET_SERVER/device_id broadcast or pair from the UI first.")
+                        "Connect to a sensor from the UI first, or use the debug SET_DEVICE_ID broadcast.")
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                     return START_NOT_STICKY

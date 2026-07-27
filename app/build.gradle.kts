@@ -124,6 +124,39 @@ android {
                 "proguard-rules.pro",
             )
         }
+
+        // A release build you can drive over ADB. Same R8 configuration, same
+        // keep rules and the same signing key as `release`, but the debug
+        // command receiver is compiled in.
+        //
+        // This exists because the two properties we need cannot coexist in one
+        // shippable artifact. Driving the app over ADB requires an exported
+        // receiver, and adb shell runs as a different app identity (uid 2000),
+        // so it cannot reach a non-exported one. But an exported receiver with
+        // no permission gate is callable by ANY app on the phone, not only by
+        // adb -- so shipping it would let any installed app repoint the upload
+        // server and token, or start and stop recordings, on a device holding
+        // health data.
+        //
+        // The alternative would be to keep the receiver in `release` behind
+        // android:permission="android.permission.WRITE_SECURE_SETTINGS", which
+        // adb shell holds and ordinary apps cannot obtain. That is defensible,
+        // but it buys nothing operationally: the phones we ship to are not
+        // reachable over ADB anyway, so the shipped artifact carries no harness
+        // at all and this variant is used for verification instead.
+        //
+        // What it does and does not prove: R8 shrinking, obfuscation and the
+        // keep rules against the real Polar and Omron code paths -- which is
+        // where release-only breakage actually lives. It is not the identical
+        // artifact, because retaining the receiver keeps a little more of the
+        // graph reachable.
+        create("releaseTest") {
+            initWith(getByName("release"))
+            matchingFallbacks += listOf("release")
+            // Resource shrinking off: it removes resources this variant's extra
+            // code may reference, and resources are not what we are testing.
+            isShrinkResources = false
+        }
     }
 
     compileOptions {
@@ -133,6 +166,11 @@ android {
 
     sourceSets["main"].kotlin.srcDirs("src/main/kotlin")
     sourceSets["test"].kotlin.srcDirs("src/test/kotlin")
+
+    // releaseTest reuses the debug harness verbatim rather than copying it, so the
+    // two cannot drift apart and grow different command sets.
+    sourceSets["releaseTest"].kotlin.srcDirs("src/debug/kotlin")
+    sourceSets["releaseTest"].manifest.srcFile("src/debug/AndroidManifest.xml")
 
     packaging {
         resources {

@@ -14,6 +14,7 @@
                 <action android:name="com.polarppgbp.debug.STOP_RECORDING" />
                 <action android:name="com.polarppgbp.debug.STATUS" />
                 <action android:name="com.polarppgbp.debug.SET_SERVER" />
+                <action android:name="com.polarppgbp.debug.SET_DEVICE_ID" />
                 <action android:name="com.polarppgbp.debug.SYNC_NOW" />
                 <action android:name="com.polarppgbp.debug.CHECK_SERVER" />
                 <action android:name="com.polarppgbp.debug.REPAIR_CUFF_CLOCK" />

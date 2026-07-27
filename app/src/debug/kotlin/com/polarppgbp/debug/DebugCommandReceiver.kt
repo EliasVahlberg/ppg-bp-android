@@ -94,6 +94,21 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 Log.i(TAG, "SET_SERVER url=$url token=${token?.take(8)?.plus("…")}")
             }
 
+            // Writes the same preference the app writes itself on a successful
+            // connect, and that Settings shows and can clear (#3). Exists because a
+            // fresh install has no binding, and pairing is the one step that
+            // otherwise forces UI driving before anything can be recorded.
+            ACTION_SET_DEVICE_ID -> {
+                val id = intent.getStringExtra("id")?.trim()
+                if (id.isNullOrEmpty()) {
+                    Log.w(TAG, "SET_DEVICE_ID: missing --es id")
+                } else {
+                    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        .edit().putString(KEY_DEVICE_ID, id).apply()
+                    Log.i(TAG, "SET_DEVICE_ID id=$id")
+                }
+            }
+
             ACTION_SYNC_NOW -> {
                 val root = SharedRepo.repo?.bundlesRoot()
                     ?: File(context.getExternalFilesDir(null) ?: context.filesDir, "sessions")
@@ -379,6 +394,7 @@ class DebugCommandReceiver : BroadcastReceiver() {
         const val ACTION_STOP = "com.polarppgbp.debug.STOP_RECORDING"
         const val ACTION_STATUS = "com.polarppgbp.debug.STATUS"
         const val ACTION_SET_SERVER = "com.polarppgbp.debug.SET_SERVER"
+        const val ACTION_SET_DEVICE_ID = "com.polarppgbp.debug.SET_DEVICE_ID"
         const val ACTION_SYNC_NOW = "com.polarppgbp.debug.SYNC_NOW"
         const val ACTION_READ_CUFF = "com.polarppgbp.debug.READ_CUFF"
         const val ACTION_REPAIR_CUFF_CLOCK = "com.polarppgbp.debug.REPAIR_CUFF_CLOCK"
