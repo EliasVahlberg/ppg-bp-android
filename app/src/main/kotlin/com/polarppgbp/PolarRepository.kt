@@ -26,6 +26,7 @@ import com.polar.sdk.api.PolarBleApiDefaultImpl
 import com.polar.sdk.api.PolarBleApi.PolarBleSdkFeature
 import com.polar.sdk.api.errors.PolarInvalidArgument
 import com.polar.androidcommunications.api.ble.model.DisInfo
+import com.polar.androidcommunications.api.ble.model.gatt.client.ChargeState
 import com.polar.sdk.api.model.PolarDeviceInfo
 import com.polar.sdk.api.model.PolarHealthThermometerData
 import com.polar.sdk.api.model.PolarHrData
@@ -35,6 +36,8 @@ import com.polar.sdk.api.model.PolarGyroData
 import com.polar.sdk.api.model.PolarSensorSetting
 import com.polar.sdk.api.model.PolarSensorSetting.SettingType
 import com.polarppgbp.recorder.Profile
+import com.polarppgbp.recorder.ChargeStatus
+import com.polarppgbp.recorder.SensorBattery
 import com.polarppgbp.recorder.StreamWatchdog
 import com.polarppgbp.recorder.WatchdogVerdict
 import com.polarppgbp.settings.RotationPeriod
@@ -92,6 +95,10 @@ data class LiveMetrics(
     val silentSensors: Set<SensorType> = emptySet(),
     /** Human-readable version of the above, null when nothing is wrong. */
     val streamWarning: String? = null,
+    /** #14: sensor battery percent, null until the sensor reports it. */
+    val batteryPercent: Int? = null,
+    /** #14: sensor charge state, UNKNOWN until reported. */
+    val chargeStatus: ChargeStatus = ChargeStatus.UNKNOWN,
 )
 
 /** Thrown by chooseSetting() when a requested sample rate isn't offered by
@@ -205,7 +212,14 @@ class PolarRepository(context: Context) {
                     device = deviceAddress,
                 )
                 _connectionState.value = ConnectionState.Idle
-                _metrics.value = _metrics.value.copy(hr = null)
+                // #14: battery is cleared with hr. A percentage from before the link
+                // dropped describes a sensor we are no longer talking to, and a stale
+                // "BAT 80%" beside a disconnected sensor is worse than no reading.
+                _metrics.value = _metrics.value.copy(
+                    hr = null,
+                    batteryPercent = null,
+                    chargeStatus = ChargeStatus.UNKNOWN,
+                )
             }
 
             override fun bleSdkFeatureReady(identifier: String, feature: PolarBleSdkFeature) {
@@ -224,6 +238,31 @@ class PolarRepository(context: Context) {
                 }
             }
 
+            // #14: FEATURE_BATTERY_INFO was already enabled but these callbacks were
+            // never overridden, so the reading was fetched and thrown away.
+            override fun batteryLevelReceived(identifier: String, level: Int) {
+                Log.i(TAG, "Battery: $level%")
+                _metrics.value = _metrics.value.copy(batteryPercent = level)
+            }
+
+            override fun batteryChargingStatusReceived(
+                identifier: String,
+                chargingStatus: ChargeState,
+            ) {
+                val mapped = when (chargingStatus) {
+                    ChargeState.CHARGING -> ChargeStatus.CHARGING
+                    ChargeState.DISCHARGING_ACTIVE,
+                    ChargeState.DISCHARGING_INACTIVE,
+                    -> ChargeStatus.DISCHARGING
+                    ChargeState.UNKNOWN -> ChargeStatus.UNKNOWN
+                }
+                // The SDK distinguishes active from inactive discharging; both are
+                // collapsed to DISCHARGING because the difference is not documented
+                // clearly enough to show a user a claim about it.
+                Log.i(TAG, "Charge state: $chargingStatus -> $mapped")
+                _metrics.value = _metrics.value.copy(chargeStatus = mapped)
+            }
+
             override fun disInformationReceived(identifier: String, disInfo: DisInfo) {}
             override fun htsNotificationReceived(identifier: String, data: PolarHealthThermometerData) {}
         })
@@ -238,7 +277,15 @@ class PolarRepository(context: Context) {
     fun startSession(profile: Profile, rotationPeriodMinutes: Int = RotationPeriod.DEFAULT_MINUTES) {
         activeProfile = profile
         segmentId = 0
-        _metrics.value = LiveMetrics()
+        // Sample counters restart per session, but battery belongs to the sensor, not
+        // to the session. The sensor reports it once shortly after connecting, so a
+        // blanket reset here would blank the readout for any session started while
+        // already connected (stop then start, with no disconnect in between) and it
+        // would never come back.
+        _metrics.value = LiveMetrics(
+            batteryPercent = _metrics.value.batteryPercent,
+            chargeStatus = _metrics.value.chargeStatus,
+        )
         val uuid = UUID.randomUUID()
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val dirName = "${profile.name}_${stamp}_${uuid.toString().take(8)}"

@@ -65,6 +65,8 @@ import com.polarppgbp.settings.SupportedRates
 import com.polarppgbp.sync.ServerHealth
 import com.polarppgbp.sync.HealthStage
 import com.polarppgbp.sync.HealthReport
+import com.polarppgbp.recorder.BatteryHealth
+import com.polarppgbp.recorder.SensorBattery
 import com.polarppgbp.rop.SensorType
 import com.polarppgbp.sync.SyncScheduler
 import kotlinx.coroutines.Dispatchers
@@ -342,8 +344,35 @@ private fun RecorderScreen(
                 counter("ACC", metrics.accSamples, SensorType.ACC)
                 counter("GYRO", metrics.gyroSamples, SensorType.GYRO)
             }
-            metrics.hr?.let {
-                Text("HR $it bpm", style = MonoReadout, color = MaterialTheme.colorScheme.secondary)
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.lg)) {
+                metrics.hr?.let {
+                    Text(
+                        "HR $it bpm",
+                        style = MonoReadout,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                }
+                // #14: a flat sensor and a sensor nobody put on look identical from
+                // here, so show the battery whenever the sensor has reported one.
+                SensorBattery.readout(metrics.batteryPercent, metrics.chargeStatus)?.let {
+                    val health = SensorBattery.healthOf(metrics.batteryPercent)
+                    Text(
+                        it,
+                        style = MonoReadout,
+                        color = when (health) {
+                            BatteryHealth.CRITICAL -> MaterialTheme.colorScheme.error
+                            BatteryHealth.LOW -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.secondary
+                        },
+                    )
+                }
+            }
+            SensorBattery.warning(metrics.batteryPercent, metrics.chargeStatus)?.let {
+                Text(
+                    "⚠ $it",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
             metrics.streamWarning?.let {
                 Text(
