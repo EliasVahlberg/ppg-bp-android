@@ -110,13 +110,6 @@ val setupRequirements: List<SetupRequirement> = listOf(
         grant = GrantAction.Permissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS)),
     ),
     SetupRequirement(
-        title = "Body sensors",
-        explanation = "Required by Android for the recording service to run as a \"health\" " +
-            "background service, even though this app doesn't read the phone's own sensors.",
-        isGranted = { ctx -> hasPermission(ctx, Manifest.permission.BODY_SENSORS) },
-        grant = GrantAction.Permissions(arrayOf(Manifest.permission.BODY_SENSORS)),
-    ),
-    SetupRequirement(
         title = "Battery optimization exemption",
         explanation = "Without this, Android can silently pause or kill recording on an " +
             "unattended phone to save battery, losing data with no warning.",

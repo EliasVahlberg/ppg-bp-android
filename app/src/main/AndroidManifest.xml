@@ -20,18 +20,30 @@
 
     <!-- Foreground service for long-running recording sessions. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Required at runtime by RecordingService's foregroundServiceType="health"
-         declaration. Android 14/targetSdk 34 enforces this specifically;
-         the FOREGROUND_SERVICE_HEALTH manifest permission alone is not
-         sufficient. Not needed by the Polar BLE SDK itself for streaming
-         (confirmed against the SDK's own official example manifests, which
-         don't declare it); this is purely to satisfy the
-         foreground-service-type check, not a sensor-access permission this
-         app actually uses. -->
-    <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <!-- BODY_SENSORS used to be declared here purely to satisfy the
+         foregroundServiceType="health" permission check, with a comment admitting
+         the app never reads the phone's own sensors. That was wrong in a way that
+         crashed the app: BODY_SENSORS is foreground-only on API 33+ (background
+         access needs the separate BODY_SENSORS_BACKGROUND grant), so the system
+         evaluates it as *denied* whenever the app has no visible UI. Starting a
+         recording from the background therefore threw
+
+             SecurityException: Starting FGS with type health ... requires
+             permissions ... [ACTIVITY_RECOGNITION, BODY_SENSORS,
+             HIGH_SAMPLING_RATE_SENSORS]
+
+         which Android wraps in a RuntimeException that kills the process, and then
+         START_STICKY brings the service back so the crash repeats. Reproduced
+         2026-07-27 on OxygenOS 14 by pressing HOME and broadcasting a start.
+
+         The type was also simply inaccurate. This service exists to hold a link to
+         an external BLE sensor, which is what "connectedDevice" describes, and its
+         permission (BLUETOOTH_CONNECT) is not foreground-restricted. The app now
+         declares no sensor permission it does not use, and one fewer runtime
+         prompt has to be granted during setup. -->
 
     <!-- Battery-optimization exemption request (#4). Not a runtime
          permission, but the Intent it launches (Settings.ACTION_REQUEST_
@@ -68,6 +80,6 @@
         <service
             android:name=".RecordingService"
             android:exported="false"
-            android:foregroundServiceType="health" />
+            android:foregroundServiceType="connectedDevice" />
     </application>
 </manifest>

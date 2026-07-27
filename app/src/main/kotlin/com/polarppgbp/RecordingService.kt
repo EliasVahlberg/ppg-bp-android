@@ -92,7 +92,7 @@ class RecordingService : Service() {
                     // service. Start briefly with an explanatory notification, then
                     // stop cleanly, rather than silently killing the app on a plain
                     // config error.
-                    startForeground(NOTIF_ID, createNotification(ConnectionState.Idle, null))
+                    enterForeground(ConnectionState.Idle)
                     Log.w(TAG, "No device ID configured (no prior pairing, no DEFAULT_DEVICE_ID build config). " +
                         "Connect to a sensor from the UI first, or use the debug SET_DEVICE_ID broadcast.")
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -105,10 +105,7 @@ class RecordingService : Service() {
                 // missing-device-ID path above and #1's fail-loudly principle.
                 val blocker = SharedRepo.repo?.currentBlocker()
                 if (blocker != null) {
-                    startForeground(
-                        NOTIF_ID,
-                        createNotification(ConnectionState.Blocked(blocker), null),
-                    )
+                    enterForeground(ConnectionState.Blocked(blocker))
                     Log.w(TAG, "Not starting: ${blocker.label}. ${blocker.remedy}")
                     SharedRepo.repo?.refreshBlocker()
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -116,7 +113,7 @@ class RecordingService : Service() {
                     return START_NOT_STICKY
                 }
                 SharedRepo.manualStop = false
-                startForeground(NOTIF_ID, createNotification(ConnectionState.Idle, null))
+                if (!enterForeground(ConnectionState.Idle)) return START_NOT_STICKY
                 val profileOverride = intent.getStringExtra("PROFILE")
                 val profile = if (profileOverride != null) {
                     Profile.byName(profileOverride)
@@ -152,6 +149,29 @@ class RecordingService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /**
+     * `startForeground` can be refused by the platform, and an uncaught refusal is
+     * fatal to the whole process rather than to this service. Because the service is
+     * START_STICKY, Android then restarts it and the crash repeats.
+     *
+     * Seen for real (2026-07-27, OxygenOS 14): with `foregroundServiceType="health"`
+     * and only the foreground-only BODY_SENSORS permission, a start issued while the
+     * app had no visible UI threw SecurityException every time. That specific cause is
+     * fixed by using the `connectedDevice` type, but the class of failure isn't
+     * app-fixable in general -- OEM background-start restrictions and
+     * ForegroundServiceStartNotAllowedException live here too -- so refusal has to
+     * degrade to "this recording didn't start" instead of taking the app down. Anything
+     * that survives is a bug to fix, not a reason to lose the process.
+     */
+    private fun enterForeground(state: ConnectionState): Boolean = try {
+        startForeground(NOTIF_ID, createNotification(state, null))
+        true
+    } catch (e: Exception) {
+        Log.e(TAG, "startForeground refused (${e.javaClass.simpleName}): ${e.message}", e)
+        stopSelf()
+        false
+    }
 
     override fun onDestroy() {
         Log.i(TAG, "RecordingService destroyed")
