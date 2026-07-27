@@ -23,8 +23,8 @@ android {
         // APK whose versionCode is not greater than the installed one, so a
         // forgotten bump silently breaks updates for every user. versionName is
         // cosmetic and only needs to be meaningful to a human.
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 5
+        versionName = "0.3.0"
 
         // Optional fallback Polar device ID used only when the app has never
         // been told which device to connect to (no prior SET_SERVER/pairing).

@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -276,7 +277,17 @@ private fun RecorderScreen(
 
     Scaffold { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(Spacing.lg),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(Spacing.lg)
+                // Without this, the status box + counters + cuff section + recent
+                // sessions list simply run off the bottom of a smaller/lower-density
+                // screen than the one this was built on, with no way to reach the
+                // Start/Stop button. dp/sp are already density-independent, so the
+                // fix is a scroll container, not a resize -- the same fix already
+                // applied to SettingsScreen for the same reason.
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
@@ -286,7 +297,13 @@ private fun RecorderScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("Polar BP Recorder", style = MaterialTheme.typography.headlineMedium)
-                IconButton(onClick = onOpenSettings, enabled = !recording) {
+                // Settings used to be locked out entirely while recording, which made
+                // it impossible to reach the calibration Start/Stop session controls --
+                // exactly the controls that need an active recording to mean anything
+                // (a marker is stored inside the session). Settings screen guards the
+                // few controls that are genuinely unsafe to change mid-recording
+                // (profile / sample rate) on their own; nothing else needs blocking here.
+                IconButton(onClick = onOpenSettings) {
                     Text("⚙", fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurface)
                 }
             }
@@ -501,27 +518,40 @@ private fun RecorderScreen(
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.buttonGap),
             ) {
                 OutlinedButton(
                     onClick = { viewModel.pairCuff() },
                     enabled = viewModel.permissionsGranted && !cuffBusy && !recording,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).heightIn(min = Spacing.minTouchTarget),
                 ) { Text("Pair (hold P)") }
                 OutlinedButton(
                     onClick = { viewModel.readCuff() },
                     enabled = viewModel.permissionsGranted && !cuffBusy && !recording,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).heightIn(min = Spacing.minTouchTarget),
                 ) { Text("Read Cuff") }
             }
 
-            Spacer(Modifier.height(Spacing.xs))
+            Spacer(Modifier.height(Spacing.md))
 
             Button(
                 onClick = { if (recording) viewModel.stopRecording() else viewModel.startRecording() },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().heightIn(min = Spacing.minTouchTarget),
             ) {
                 Text(if (recording) "Stop Recording" else "Start Recording")
+            }
+
+            Spacer(Modifier.height(Spacing.sm))
+
+            // Opens the same server this phone syncs to, in the system browser, so
+            // checking the dashboard does not require typing the address by hand on
+            // a phone that is not the one being carried around during a visit.
+            if (viewModel.serverConfigured) {
+                val ctx = LocalContext.current
+                OutlinedButton(
+                    onClick = { viewModel.openWebView(ctx) },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = Spacing.minTouchTarget),
+                ) { Text("View on web") }
             }
         }
     }
@@ -552,12 +582,18 @@ private fun describeOffset(offsetSeconds: Long?): String {
  * #3: the paired Polar, viewable and clearable without ADB or a reinstall. Previously the
  * binding was written automatically on connect with no way to see or change it, so moving
  * to a second sensor meant clearing app data.
+ *
+ * "Connect sensor" is the only way a device ID is ever written in the first place -- see
+ * MainViewModel.connectSensor(). Recording refuses to start without one (RecordingService
+ * logs "No device ID configured" and stops itself), so this button is not optional polish,
+ * it is the missing first step of setup on a phone that has never paired before.
  */
 @Composable
 private fun DeviceSection(viewModel: MainViewModel) {
     var confirming by remember { mutableStateOf(false) }
     Text("Polar sensor", style = MaterialTheme.typography.titleMedium)
     val id = viewModel.pairedDeviceId
+    val connectionState by viewModel.connectionState.collectAsState()
     if (id == null) {
         Text(
             "No sensor paired. Connect once and this phone will remember it.",
@@ -566,6 +602,42 @@ private fun DeviceSection(viewModel: MainViewModel) {
     } else {
         Text("Paired: $id", style = MaterialTheme.typography.bodySmall)
         OutlinedButton(onClick = { confirming = true }) { Text("Forget sensor") }
+    }
+
+    val searching = connectionState is ConnectionState.Searching ||
+        connectionState is ConnectionState.Connecting
+    Button(
+        onClick = { viewModel.connectSensor() },
+        enabled = !searching,
+        modifier = Modifier.fillMaxWidth(),
+    ) { Text(if (searching) "Searching…" else if (id == null) "Connect sensor" else "Reconnect / find a different sensor") }
+    when (val s = connectionState) {
+        is ConnectionState.Searching -> Text(
+            s.message,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        is ConnectionState.Connecting -> Text(
+            "Connecting to ${s.deviceId}…",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        is ConnectionState.Connected -> Text(
+            "Connected: ${s.name} (${s.deviceId})",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        is ConnectionState.Failed -> Text(
+            "⚠ ${s.reason}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+        is ConnectionState.Blocked -> Text(
+            "⚠ ${s.cause.label} — ${s.cause.remedy}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+        ConnectionState.Idle -> Unit
     }
 
     if (confirming) {
@@ -819,16 +891,16 @@ private fun CalibrationSection(viewModel: MainViewModel) {
         )
     }
 
-    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.buttonGap)) {
         Button(
             onClick = { viewModel.startCalibrationSession() },
             enabled = !viewModel.calibrationOpen,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).heightIn(min = Spacing.minTouchTarget),
         ) { Text("Start session") }
         OutlinedButton(
             onClick = { viewModel.stopCalibrationSession() },
             enabled = viewModel.calibrationOpen,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).heightIn(min = Spacing.minTouchTarget),
         ) { Text("Stop session") }
     }
 
@@ -874,6 +946,14 @@ private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
             }
 
             Text("Recording profile", style = MaterialTheme.typography.titleSmall)
+            val recordingNow by viewModel.recording.collectAsState()
+            if (recordingNow) {
+                Text(
+                    "Locked while recording — stop the recording to change profile or rates.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
             ProfileChoice.entries.forEach { choice ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -882,6 +962,7 @@ private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
                     RadioButton(
                         selected = settings.profileChoice == choice,
                         onClick = { viewModel.setProfileChoice(choice) },
+                        enabled = !recordingNow,
                     )
                     Text(choice.label, style = MaterialTheme.typography.bodyLarge)
                 }
@@ -889,7 +970,7 @@ private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
 
             Spacer(Modifier.height(Spacing.xs))
             Text("Per-sensor sample rate", style = MaterialTheme.typography.titleSmall)
-            val customEnabled = settings.profileChoice == ProfileChoice.CUSTOM
+            val customEnabled = settings.profileChoice == ProfileChoice.CUSTOM && !recordingNow
             RateDropdown(
                 label = "PPG (Hz)",
                 selectedHz = if (customEnabled) settings.customPpgHz else settings.toProfile().rates[SensorType.PPG],
@@ -938,6 +1019,7 @@ private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
 
             OutlinedButton(
                 onClick = { showResetConfirm = true },
+                enabled = !recordingNow,
                 modifier = Modifier.fillMaxWidth(),
                 colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
                     contentColor = MaterialTheme.colorScheme.error,
@@ -1199,6 +1281,39 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
     fun resetSettingsToDefaults() {
         settingsStore.resetToDefaults()
         settings = settingsStore.get()
+    }
+
+    /**
+     * Opens the configured server's dashboard in the system browser. Deliberately
+     * does not pass the token in the URL: the server's own login flow (POST to
+     * /app/login) exists specifically so a token never lands in a URL, browser
+     * history, or an access log -- see web.py's login() docstring. The person
+     * opening this signs in once in that browser; the resulting session cookie is
+     * good for 90 days, so this is a one-time step per browser, not per visit.
+     */
+    fun openWebView(context: android.content.Context) {
+        val base = serverUrl?.trimEnd('/') ?: return
+        val url = if (base.contains("/app")) base else "$base/app"
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+            )
+        }
+    }
+
+    /**
+     * The only place a device ID is ever written before a recording can start (see
+     * RecordingService's "No device ID configured" refusal). Delegates to
+     * PolarRepository.scanAndConnect(), which was previously dead code -- reachable from
+     * nowhere in the UI, so a phone that had never paired before had no way to record at
+     * all short of an ADB debug broadcast. A successful connect callback writes
+     * KEY_DEVICE_ID (RecordingService's connectionState collector), so this only needs
+     * to run once per sensor; reconnects on subsequent app/recording starts are automatic.
+     */
+    fun connectSensor() {
+        SharedRepo.repo?.scanAndConnect()
     }
 
     /** Pair (first time, cuff held in -P- mode) then read. Reprograms the key. */

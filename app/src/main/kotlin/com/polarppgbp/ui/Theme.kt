@@ -114,6 +114,16 @@ object Spacing {
     val md = 14.dp
     val lg = 20.dp
     val xl = 32.dp
+
+    /** Gap between adjacent tappable buttons, wider than [md]. A patient with
+     * mobility/dexterity difficulty is more likely to mis-tap a neighbouring
+     * button the closer two targets sit, so button rows use this instead of the
+     * general layout spacing. */
+    val buttonGap = 24.dp
+
+    /** Minimum touch target height, above Android's own 48dp accessibility
+     * minimum, for the same reason as [buttonGap]. */
+    val minTouchTarget = 56.dp
 }
 
 @Composable
