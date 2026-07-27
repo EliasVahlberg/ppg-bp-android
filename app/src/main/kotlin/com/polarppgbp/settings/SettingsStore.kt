@@ -31,6 +31,17 @@ const val KEY_CUSTOM_ACC_HZ = "settings_custom_acc_hz"
 const val KEY_CUSTOM_GYRO_HZ = "settings_custom_gyro_hz"
 const val KEY_ROTATION_MINUTES = "settings_rotation_minutes"
 
+/**
+ * Open calibration-session marker state. Persisted rather than held in memory so an
+ * open session survives the settings screen being left, the app being backgrounded, or
+ * the process being killed mid-recording -- otherwise a protocol run started an hour
+ * ago silently reverts to "not started" and the stop marker never gets written.
+ */
+const val KEY_CALIB_OPEN = "settings_calib_open"
+const val KEY_CALIB_NAME = "settings_calib_name"
+const val KEY_CALIB_TAGS = "settings_calib_tags"
+const val KEY_CALIB_STARTED_AT = "settings_calib_started_at"
+
 /** Candidate sample rates per sensor, from the Polar Verity Sense online
  * streaming spec (docs/products/PolarVeritySense.md in the SDK reference,
  * confirmed against a real device's reported PolarSensorSetting during
@@ -186,6 +197,37 @@ class SettingsStore(context: Context) {
         val valid = RotationPeriod.normalise(minutes)
             ?: throw IllegalArgumentException("invalid rotation period: $minutes")
         prefs.edit().putInt(KEY_ROTATION_MINUTES, valid).apply()
+    }
+
+    // ---- calibration session markers ----
+
+    fun isCalibrationOpen(): Boolean = prefs.getBoolean(KEY_CALIB_OPEN, false)
+
+    fun calibrationName(): String? = prefs.getString(KEY_CALIB_NAME, null)
+
+    fun calibrationTags(): String? = prefs.getString(KEY_CALIB_TAGS, null)
+
+    /** Epoch millis the open session was started, or 0 when none is open. */
+    fun calibrationStartedAt(): Long = prefs.getLong(KEY_CALIB_STARTED_AT, 0L)
+
+    fun openCalibration(name: String?, tags: String?, startedAtMs: Long) {
+        prefs.edit()
+            .putBoolean(KEY_CALIB_OPEN, true)
+            .putString(KEY_CALIB_NAME, name)
+            .putString(KEY_CALIB_TAGS, tags)
+            .putLong(KEY_CALIB_STARTED_AT, startedAtMs)
+            .apply()
+    }
+
+    /**
+     * Closes the marker but keeps the name and tags, so a second run in the same
+     * sitting does not have to be retyped.
+     */
+    fun closeCalibration() {
+        prefs.edit()
+            .putBoolean(KEY_CALIB_OPEN, false)
+            .putLong(KEY_CALIB_STARTED_AT, 0L)
+            .apply()
     }
 
     fun resetToDefaults() {

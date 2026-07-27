@@ -33,6 +33,7 @@ import com.polarppgbp.RecordingService
 import com.polarppgbp.SharedRepo
 import com.polarppgbp.omron.OmronCuffClient
 import com.polarppgbp.rop.SensorType
+import com.polarppgbp.recorder.CalibrationSessionController
 import com.polarppgbp.settings.ProfileChoice
 import com.polarppgbp.settings.SettingsStore
 import com.polarppgbp.sync.SyncScheduler
@@ -131,6 +132,25 @@ class DebugCommandReceiver : BroadcastReceiver() {
                     "GET_SETTINGS profile=${s.profileChoice.storageName} " +
                         "ppg=${s.customPpgHz} acc=${s.customAccHz} gyro=${s.customGyroHz} " +
                         "resolved=${s.toProfile().rates}",
+                )
+            }
+
+            ACTION_CALIB_START, ACTION_CALIB_STOP -> {
+                // Calibration session delimiters. Name and tags default to whatever the
+                // Settings screen last held, so the common case needs no extras.
+                val controller = CalibrationSessionController(context.applicationContext)
+                val store = SettingsStore(context)
+                val name = intent.getStringExtra("name") ?: store.calibrationName()
+                val tags = intent.getStringExtra("tags") ?: store.calibrationTags()
+                val outcome = if (intent.action == ACTION_CALIB_START) {
+                    controller.start(name, tags)
+                } else {
+                    controller.stop(name, tags)
+                }
+                Log.i(
+                    TAG,
+                    "${intent.action}: ok=${outcome.ok} ${outcome.message} " +
+                        "(name=$name tags=$tags open=${controller.isOpen()})",
                 )
             }
 
@@ -403,6 +423,8 @@ class DebugCommandReceiver : BroadcastReceiver() {
         const val ACTION_WRITE_CUFF_TIME = "com.polarppgbp.debug.WRITE_CUFF_TIME"
         const val ACTION_PAIR_CUFF = "com.polarppgbp.debug.PAIR_CUFF"
         const val ACTION_GET_SETTINGS = "com.polarppgbp.debug.GET_SETTINGS"
+        const val ACTION_CALIB_START = "com.polarppgbp.debug.CALIB_START"
+        const val ACTION_CALIB_STOP = "com.polarppgbp.debug.CALIB_STOP"
         const val ACTION_SET_PROFILE = "com.polarppgbp.debug.SET_PROFILE"
         const val ACTION_SET_RATE = "com.polarppgbp.debug.SET_RATE"
         const val ACTION_RESET_SETTINGS = "com.polarppgbp.debug.RESET_SETTINGS"

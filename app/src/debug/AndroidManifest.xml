@@ -26,6 +26,8 @@
                 <action android:name="com.polarppgbp.debug.SET_PROFILE" />
                 <action android:name="com.polarppgbp.debug.SET_RATE" />
                 <action android:name="com.polarppgbp.debug.RESET_SETTINGS" />
+                <action android:name="com.polarppgbp.debug.CALIB_START" />
+                <action android:name="com.polarppgbp.debug.CALIB_STOP" />
             </intent-filter>
         </receiver>
     </application>

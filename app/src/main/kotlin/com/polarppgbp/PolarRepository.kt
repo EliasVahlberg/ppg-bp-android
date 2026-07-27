@@ -348,6 +348,20 @@ class PolarRepository(context: Context) {
         runCatching { session?.sync() }
     }
 
+    /**
+     * Append a note to the active recording, returning false when there is no
+     * recording to append to.
+     *
+     * Returning a boolean rather than throwing or silently no-op'ing: the caller
+     * (the calibration marker UI) has to be able to tell the user that a marker went
+     * nowhere. A marker the user believes was recorded, but wasn't, is worse than a
+     * refused one, because the paper log and the data will disagree with no sign of it.
+     */
+    fun appendNote(note: String): Boolean {
+        val writer = session ?: return false
+        return runCatching { writer.appendNote(nowSec(), note); true }.getOrDefault(false)
+    }
+
     // --------------------------------------------------------- connection API
 
     /** Current hard blocker, or null when the link is permitted to work. */

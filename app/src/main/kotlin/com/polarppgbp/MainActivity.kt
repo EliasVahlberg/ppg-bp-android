@@ -65,7 +65,11 @@ import com.polarppgbp.settings.SupportedRates
 import com.polarppgbp.sync.ServerHealth
 import com.polarppgbp.sync.HealthStage
 import com.polarppgbp.sync.HealthReport
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import com.polarppgbp.recorder.BatteryHealth
+import com.polarppgbp.recorder.CalibrationSessionController
 import com.polarppgbp.recorder.SensorBattery
 import com.polarppgbp.rop.SensorType
 import com.polarppgbp.sync.SyncScheduler
@@ -772,6 +776,80 @@ private fun ServerSection(viewModel: MainViewModel) {
     }
 }
 
+/**
+ * Calibration session delimiters.
+ *
+ * Marks which slice of a recording was a protocol run, with a name and tags, so the
+ * boundaries do not have to be reconstructed from a paper log and a wall clock later.
+ * Detailed in-session annotation (posture changes, cuff readings, symptoms) is not
+ * here: those belong on the recording screen where they would actually be tapped.
+ */
+@Composable
+private fun CalibrationSection(viewModel: MainViewModel) {
+    val recording by viewModel.recording.collectAsState()
+
+    Text("Calibration session", style = MaterialTheme.typography.titleSmall)
+
+    OutlinedTextField(
+        value = viewModel.calibrationName,
+        onValueChange = { viewModel.calibrationName = it },
+        label = { Text("Session name") },
+        singleLine = true,
+        enabled = !viewModel.calibrationOpen,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = viewModel.calibrationTags,
+        onValueChange = { viewModel.calibrationTags = it },
+        label = { Text("Tags (comma separated)") },
+        singleLine = true,
+        enabled = !viewModel.calibrationOpen,
+        modifier = Modifier.fillMaxWidth(),
+    )
+
+    if (viewModel.calibrationOpen) {
+        val started = remember(viewModel.calibrationStartedAtMs) {
+            SimpleDateFormat("HH:mm", Locale.US)
+                .format(Date(viewModel.calibrationStartedAtMs))
+        }
+        Text(
+            "Open since $started",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+        Button(
+            onClick = { viewModel.startCalibrationSession() },
+            enabled = !viewModel.calibrationOpen,
+            modifier = Modifier.weight(1f),
+        ) { Text("Start session") }
+        OutlinedButton(
+            onClick = { viewModel.stopCalibrationSession() },
+            enabled = viewModel.calibrationOpen,
+            modifier = Modifier.weight(1f),
+        ) { Text("Stop session") }
+    }
+
+    // The marker lives in the recording's notes, so without a recording there is
+    // nowhere to put it. Say so before the button is pressed, not after.
+    if (!recording && !viewModel.calibrationOpen) {
+        Text(
+            "Start a recording first. The marker is stored inside the session.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+    }
+    viewModel.calibrationStatus?.let {
+        Text(
+            it,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+    }
+}
+
 @Composable
 private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
     val settings = viewModel.settings
@@ -847,6 +925,8 @@ private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.outline,
             )
 
+            Spacer(Modifier.height(Spacing.sm))
+            CalibrationSection(viewModel)
             Spacer(Modifier.height(Spacing.sm))
             ServerSection(viewModel)
             Spacer(Modifier.height(Spacing.sm))
@@ -962,6 +1042,40 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
 
     fun refreshSessions() {
         sessions = SharedRepo.repo?.listRecentSessions(8) ?: emptyList()
+    }
+
+    // ---- calibration session markers ----
+
+    private val calibrationController = CalibrationSessionController(context)
+
+    var calibrationName: String by mutableStateOf(settingsStore.calibrationName().orEmpty())
+    var calibrationTags: String by mutableStateOf(settingsStore.calibrationTags().orEmpty())
+    var calibrationOpen: Boolean by mutableStateOf(settingsStore.isCalibrationOpen())
+        private set
+    var calibrationStartedAtMs: Long by mutableStateOf(settingsStore.calibrationStartedAt())
+        private set
+    var calibrationStatus: String? by mutableStateOf(null)
+        private set
+
+    fun refreshCalibrationState() {
+        calibrationOpen = settingsStore.isCalibrationOpen()
+        calibrationStartedAtMs = settingsStore.calibrationStartedAt()
+    }
+
+    /**
+     * Both actions delegate to [CalibrationSessionController] so the Settings UI and
+     * the debug broadcast harness run the same code path rather than two copies of it.
+     */
+    fun startCalibrationSession() {
+        val outcome = calibrationController.start(calibrationName, calibrationTags)
+        calibrationStatus = outcome.message
+        refreshCalibrationState()
+    }
+
+    fun stopCalibrationSession() {
+        val outcome = calibrationController.stop(calibrationName, calibrationTags)
+        calibrationStatus = outcome.message
+        refreshCalibrationState()
     }
 
     /** #17: re-publish (or clear) the hard blocker; called from onResume. */
