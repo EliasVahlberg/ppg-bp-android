@@ -13,6 +13,26 @@
 
 package com.polarppgbp.omron
 
+/**
+ * Why a clock write is being offered. The two cases need different words in front of a
+ * user and imply different things about the device, so they are not collapsed into a
+ * boolean.
+ */
+enum class RepairReason {
+    /** Clock is running and close enough to the phone. Nothing to do. */
+    NONE,
+
+    /** The halted sentinel is present: the RTC has stopped. The device is broken. */
+    HALTED,
+
+    /**
+     * The clock runs but is wrong by more than [CuffClockRepair.GROSS_OFFSET_S] -- the
+     * state a cuff arrives in from the factory, or after its cells are replaced and the
+     * RTC restarts from an arbitrary value.
+     */
+    GROSSLY_WRONG,
+}
+
 /** Outcome of a clock repair attempt, in the order the stages are attempted. */
 enum class RepairOutcome {
     /** Clock was not halted, so nothing was written. */
@@ -60,11 +80,37 @@ object CuffClockRepair {
     const val ADVANCING_TOLERANCE_S = 5L
 
     /**
-     * Repair is offered only when the halted sentinel is present -- never
-     * speculatively, never on a schedule, and never for ordinary drift. Drift is a
-     * measurement problem (#9); a halted clock is a broken device.
+     * Above this, the cuff's clock is not drifting -- it was never set. An hour is the
+     * dividing line because this project cares about time of day (morning versus
+     * afternoon readings differ systematically), so an error of an hour or more puts a
+     * reading in the wrong part of the day, whereas seconds or minutes of genuine drift
+     * are a measurement problem that #9 already handles by recording the offset.
      */
-    fun needed(observation: CuffClockObservation): Boolean = observation.halted
+    const val GROSS_OFFSET_S = 3600L
+
+    /**
+     * Why a write is being offered, if at all. Never speculative, never on a schedule.
+     *
+     * Ordinary drift is deliberately excluded: the offset is measured on every read and
+     * the correction is applied at analysis time, so writing to fix a few minutes would
+     * be an EEPROM write that buys nothing. What is included is a clock that was never
+     * set -- a factory-fresh cuff, or one whose RTC restarted after a battery change.
+     * Correction would still work arithmetically there, but a cuff dated 2020 breaks the
+     * ring-buffer reasoning in #10, misleads anyone reading the device, and leaves the
+     * join key one unnoticed service visit away from jumping.
+     *
+     * An undecodable clock yields NONE: if the reading cannot be trusted, neither can a
+     * decision to overwrite it.
+     */
+    fun reason(observation: CuffClockObservation): RepairReason = when {
+        observation.halted -> RepairReason.HALTED
+        !observation.clockValid || observation.offsetSeconds == null -> RepairReason.NONE
+        kotlin.math.abs(observation.offsetSeconds) >= GROSS_OFFSET_S -> RepairReason.GROSSLY_WRONG
+        else -> RepairReason.NONE
+    }
+
+    fun needed(observation: CuffClockObservation): Boolean =
+        reason(observation) != RepairReason.NONE
 
     /**
      * Classify the verification read taken [SETTLE_MS] after the write.

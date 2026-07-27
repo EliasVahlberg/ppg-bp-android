@@ -391,10 +391,19 @@ class OmronCuffClient(
             )
             onStatus("clock before: ${clockBefore.iso()} halted=${clockBefore.halted} crcOk=${clockBefore.checksumOk}")
 
-            if (!clockBefore.halted && !force) {
+            // Write only for a clock that has stopped or was never set. Ordinary drift is
+            // measured and corrected at analysis time (#9), so writing for it would be an
+            // EEPROM write that buys nothing. The bracket is a single instant here rather
+            // than the read window used on the sync path: this decision needs a magnitude
+            // in hours, not a sub-second uncertainty.
+            val nowMs = System.currentTimeMillis()
+            val observedBefore = CuffClockObservation.of(clockBefore, nowMs, nowMs)
+            if (!CuffClockRepair.needed(observedBefore) && !force) {
                 endTransmission()
                 throw CuffException(
-                    "Refusing to write: clock is not halted (${clockBefore.iso()}). Pass force to override.",
+                    "Refusing to write: clock is running and within " +
+                        "${CuffClockRepair.GROSS_OFFSET_S}s of the phone " +
+                        "(${clockBefore.iso()}). Pass force to override.",
                 )
             }
 

@@ -108,4 +108,72 @@ class CuffClockRepairTest {
             CuffClockRepair.SETTLE_MS / 1000 > CuffClockRepair.ADVANCING_TOLERANCE_S * 2,
         )
     }
+
+    // -------------------------------------------------- a clock that was never set
+
+    private fun running(offsetSeconds: Long) = CuffClockObservation(
+        cuffIso = "2020-01-01T00:00:00",
+        phoneIso = "2026-07-27T10:00:00",
+        offsetSeconds = offsetSeconds,
+        uncertaintySeconds = 1,
+        halted = false,
+        clockValid = true,
+        detail = "test",
+    )
+
+    @Test
+    fun aFactoryFreshClockIsOfferedRepair() {
+        // A new cuff runs, but from an arbitrary date. Correction would still work
+        // arithmetically; the problem is everything else that reads the timestamp.
+        val yearsOff = -6L * 365 * 24 * 3600
+        assertEquals(RepairReason.GROSSLY_WRONG, CuffClockRepair.reason(running(yearsOff)))
+        assertTrue(CuffClockRepair.needed(running(yearsOff)))
+    }
+
+    @Test
+    fun ordinaryDriftIsStillNotOfferedRepair() {
+        // The point of #9 is that drift is measured and corrected, not written over.
+        assertEquals(RepairReason.NONE, CuffClockRepair.reason(running(-300)))
+        assertEquals(RepairReason.NONE, CuffClockRepair.reason(running(300)))
+        assertFalse(CuffClockRepair.needed(running(-300)))
+    }
+
+    @Test
+    fun theThresholdSitsAtAnHourAndIsInclusive() {
+        assertEquals(RepairReason.NONE, CuffClockRepair.reason(running(-3599)))
+        assertEquals(RepairReason.GROSSLY_WRONG, CuffClockRepair.reason(running(-3600)))
+        assertEquals(RepairReason.GROSSLY_WRONG, CuffClockRepair.reason(running(3600)))
+    }
+
+    @Test
+    fun haltedTakesPrecedenceOverMagnitude() {
+        // A halted clock reports no offset at all, so it must be classified by the
+        // sentinel and not fall through to the magnitude test.
+        val halted = CuffClockObservation(
+            cuffIso = "2026-07-26T23:03:29",
+            phoneIso = "2026-07-27T10:00:00",
+            offsetSeconds = null,
+            uncertaintySeconds = 1,
+            halted = true,
+            clockValid = false,
+            detail = "halted",
+        )
+        assertEquals(RepairReason.HALTED, CuffClockRepair.reason(halted))
+    }
+
+    @Test
+    fun anUndecodableClockIsNotOverwritten() {
+        // If the reading cannot be trusted, neither can a decision to overwrite it.
+        val garbled = CuffClockObservation(
+            cuffIso = "2026-07-27T10:00:00",
+            phoneIso = "2026-07-27T10:00:00",
+            offsetSeconds = null,
+            uncertaintySeconds = 1,
+            halted = false,
+            clockValid = false,
+            detail = "crc mismatch",
+        )
+        assertEquals(RepairReason.NONE, CuffClockRepair.reason(garbled))
+        assertFalse(CuffClockRepair.needed(garbled))
+    }
 }

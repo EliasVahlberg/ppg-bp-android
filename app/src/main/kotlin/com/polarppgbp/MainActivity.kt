@@ -54,6 +54,7 @@ import com.polarppgbp.omron.CuffClockObservation
 import com.polarppgbp.omron.CuffClockRepair
 import com.polarppgbp.omron.CuffStore
 import com.polarppgbp.omron.OmronCuffClient
+import com.polarppgbp.omron.RepairReason
 import com.polarppgbp.settings.ProfileChoice
 import com.polarppgbp.settings.RecordingSettings
 import com.polarppgbp.settings.RotationPeriod
@@ -320,14 +321,36 @@ private fun RecorderScreen(
                     ) { Text("Turn on Bluetooth") }
                 }
 
-            // Live sample counters.
+            // Live sample counters. A silent sensor is coloured as an error rather than
+            // shown as a neutral zero: #19 produced sessions where a stationary "0" next
+            // to a healthy heart rate read as "not started yet" for the whole recording.
             Row(horizontalArrangement = Arrangement.spacedBy(Spacing.lg)) {
-                Text("PPG ${metrics.ppgSamples}", style = MonoReadout, color = MaterialTheme.colorScheme.primary)
-                Text("ACC ${metrics.accSamples}", style = MonoReadout, color = MaterialTheme.colorScheme.primary)
-                Text("GYRO ${metrics.gyroSamples}", style = MonoReadout, color = MaterialTheme.colorScheme.primary)
+                @Composable
+                fun counter(label: String, value: Long, sensor: SensorType) {
+                    val silent = metrics.silentSensors.contains(sensor)
+                    Text(
+                        "$label $value",
+                        style = MonoReadout,
+                        color = if (silent) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    )
+                }
+                counter("PPG", metrics.ppgSamples, SensorType.PPG)
+                counter("ACC", metrics.accSamples, SensorType.ACC)
+                counter("GYRO", metrics.gyroSamples, SensorType.GYRO)
             }
             metrics.hr?.let {
                 Text("HR $it bpm", style = MonoReadout, color = MaterialTheme.colorScheme.secondary)
+            }
+            metrics.streamWarning?.let {
+                Text(
+                    "⚠ $it",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
 
             Spacer(Modifier.height(Spacing.sm))
@@ -385,14 +408,25 @@ private fun RecorderScreen(
                 }
             }
 
-            // #18: a halted RTC cannot be fixed from the cuff itself, so offer the only
-            // recovery route -- but never write without asking.
+            // #18: a cuff clock that has stopped, or was never set, cannot be fixed from
+            // the cuff itself -- it has no clock UI at all -- so offer the only recovery
+            // route, but never write without asking.
             val haltedClock by viewModel.cuffClockHalted.collectAsState()
             haltedClock?.let { clock ->
                 var confirming by remember { mutableStateOf(false) }
+                val reason = CuffClockRepair.reason(clock)
                 Text(
-                    "⚠ Cuff clock has stopped (frozen at ${clock.cuffIso}). New readings cannot " +
-                        "be matched to a recording until it is set.",
+                    when (reason) {
+                        RepairReason.HALTED ->
+                            "⚠ Cuff clock has stopped (frozen at ${clock.cuffIso}). New readings " +
+                                "cannot be matched to a recording until it is set."
+                        // A new cuff arrives like this, and it reads as an ordinary
+                        // date, so say plainly how far off it is.
+                        else ->
+                            "⚠ Cuff clock is set to ${clock.cuffIso}, which is " +
+                                "${describeOffset(clock.offsetSeconds)} from this phone. " +
+                                "Readings will be filed under the wrong date until it is set."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
@@ -409,10 +443,13 @@ private fun RecorderScreen(
                         text = {
                             Text(
                                 "This writes to the cuff — the only write this app performs.\n\n" +
-                                    "Cuff now: ${clock.cuffIso} (stopped)\n" +
-                                    "Will write: $proposed\n\n" +
+                                    "Cuff now: ${clock.cuffIso}" +
+                                    (if (reason == RepairReason.HALTED) " (stopped)" else "") +
+                                    "\nWill write: $proposed\n\n" +
                                     "Stored readings are not touched. Their timestamps stay as " +
-                                    "recorded, so nothing already synced is affected.\n\n" +
+                                    "recorded, so nothing already synced is affected — but " +
+                                    "readings taken before and after this point are on different " +
+                                    "clocks, which is expected and is recorded in the clock log.\n\n" +
                                     "The cuff may need a second press of its transfer button to " +
                                     "confirm the clock is running.",
                             )
@@ -461,6 +498,23 @@ private fun RecorderScreen(
  * Settings screen (#1). Styled per the app theme (Theme.kt) — dark brand
  * palette, JetBrains Mono for the Hz readouts, consistent Spacing scale.
  */
+/**
+ * Render a cuff-vs-phone offset the way a person would say it. Used in the clock warning,
+ * where "-190512334s" tells the reader nothing.
+ */
+private fun describeOffset(offsetSeconds: Long?): String {
+    if (offsetSeconds == null) return "an unknown amount"
+    val s = kotlin.math.abs(offsetSeconds)
+    val direction = if (offsetSeconds < 0) "behind" else "ahead of"
+    val magnitude = when {
+        s < 3600 -> "${s / 60} min"
+        s < 86_400 -> "${s / 3600} h"
+        s < 365L * 86_400 -> "${s / 86_400} days"
+        else -> "${s / (365L * 86_400)} years"
+    }
+    return "$magnitude $direction"
+}
+
 /**
  * #3: the paired Polar, viewable and clearable without ADB or a reinstall. Previously the
  * binding was written automatically on connect with no way to see or change it, so moving
