@@ -19,3 +19,10 @@ tests_e2e/__pycache__/
 tests_e2e/e2e/__pycache__/
 tests_e2e/.pytest_cache/
 
+
+# Release signing material. The keystore itself lives outside the repo, but a
+# stray copy here must never be committed: whoever holds it can publish updates
+# that Android will accept as coming from us.
+*.jks
+*.keystore
+*.credentials

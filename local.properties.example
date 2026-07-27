@@ -1,0 +1,10 @@
+# Local, gitignored build configuration. Copy to `local.properties`.
+#
+# Release signing (#12). The keystore must live outside the repository.
+#   releaseStoreFile=/home/you/keystores/ppg-bp-release.jks
+#   releaseStorePassword=...
+#   releaseKeyAlias=ppg-bp
+#   releaseKeyPassword=...
+#
+# Optional fallback Polar device serial for development builds:
+#   defaultDeviceId=YOURSERIAL

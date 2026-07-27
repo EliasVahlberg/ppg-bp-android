@@ -19,8 +19,12 @@ android {
         // device (OnePlus 9 Pro) runs Android 14 (API 34) so this is fine.
         minSdk = 33
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        // Increment versionCode on EVERY release: Android refuses to install an
+        // APK whose versionCode is not greater than the installed one, so a
+        // forgotten bump silently breaks updates for every user. versionName is
+        // cosmetic and only needs to be meaningful to a human.
+        versionCode = 2
+        versionName = "0.2.0"
 
         // Optional fallback Polar device ID used only when the app has never
         // been told which device to connect to (no prior SET_SERVER/pairing).
@@ -38,6 +42,64 @@ android {
         buildConfigField("String", "DEFAULT_DEVICE_ID", "\"$defaultDeviceId\"")
     }
 
+    // Release signing (#12). The keystore lives OUTSIDE the repo and its
+    // passwords come from gitignored `local.properties` (or -P properties, or
+    // the environment), following the same pattern as `defaultDeviceId` above.
+    // These repos are public: nothing secret may be committed.
+    //
+    // The signing identity is effectively permanent. Android identifies an app
+    // by (applicationId, signing certificate), so signing a later release with a
+    // different key forces users to uninstall -- which wipes filesDir and
+    // SharedPreferences, i.e. unsynced recordings and the server config. Back the
+    // keystore and both passwords up before shipping anything signed with it.
+    //
+    // If the credentials are absent (a fresh clone, or CI), the release build
+    // stays unsigned rather than failing: an unsigned APK is obvious and
+    // harmless, whereas a build error here would block `assembleRelease` for
+    // anyone just wanting to check that R8 succeeds.
+    signingConfigs {
+        create("release") {
+            val props = Properties().apply {
+                val f = rootProject.file("local.properties")
+                if (f.exists()) FileInputStream(f).use { load(it) }
+            }
+            fun setting(name: String, env: String): String? =
+                (project.findProperty(name) as String?)
+                    ?: props.getProperty(name)
+                    ?: System.getenv(env)
+
+            val storePath = setting("releaseStoreFile", "PPG_BP_STORE_FILE")
+            val storePass = setting("releaseStorePassword", "PPG_BP_STORE_PASSWORD")
+            val keyAliasValue = setting("releaseKeyAlias", "PPG_BP_KEY_ALIAS")
+            val keyPass = setting("releaseKeyPassword", "PPG_BP_KEY_PASSWORD")
+
+            if (storePath != null && storePass != null &&
+                keyAliasValue != null && keyPass != null &&
+                file(storePath).exists()
+            ) {
+                storeFile = file(storePath)
+                storePassword = storePass
+                keyAlias = keyAliasValue
+                keyPassword = keyPass
+
+                // v2 is the baseline. v3 additionally records a signing-
+                // certificate lineage, which is the only mechanism that lets a
+                // future key change be accepted as an update instead of forcing
+                // an uninstall (and with it the loss of unsynced recordings).
+                // Every supported device is Android 13+, so both are safe.
+                // v1 (JAR signing) is only needed below API 24 and is skipped.
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = true
+            } else {
+                logger.warn(
+                    "ppg-bp: release signing credentials not found; " +
+                        "release build will be UNSIGNED and cannot be installed as an update.",
+                )
+            }
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -50,6 +112,11 @@ android {
             isDebuggable = true
         }
         release {
+            // Only attach the config if it actually resolved to a keystore;
+            // otherwise Gradle fails the build on a null storeFile.
+            signingConfigs.getByName("release").storeFile?.let {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
