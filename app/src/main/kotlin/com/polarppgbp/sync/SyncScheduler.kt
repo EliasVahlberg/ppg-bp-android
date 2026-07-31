@@ -33,13 +33,30 @@ object SyncScheduler {
             .enqueueUniqueWork("sync_${bundleDir.name}", ExistingWorkPolicy.KEEP, req)
     }
 
-    /** Enqueue every completed-but-unsynced bundle under [root]. Returns count enqueued. */
-    fun enqueueAllUnsynced(context: Context, root: File): Int {
-        val dirs = root.listFiles()?.filter {
+    /**
+     * Bundles under [root] that finished recording but never reached the server.
+     *
+     * A bundle qualifies when it has a manifest (so recording actually finalised
+     * -- a dir without one is either still being written or was abandoned
+     * mid-recording, and has nothing coherent to upload) and has no completion
+     * marker (written only after open + all files + complete all succeed, so its
+     * absence means the upload did not finish).
+     *
+     * Pure and separate from [enqueueAllUnsynced] so this decision can be tested
+     * without a WorkManager or an Android context. It is the part that has to be
+     * right: a false negative means a recording is silently never uploaded, which
+     * is exactly what stranded three sessions from the 2026-07-27 visit.
+     */
+    fun findUnsynced(root: File): List<File> =
+        root.listFiles()?.filter {
             it.isDirectory &&
                 File(it, "manifest.json").isFile &&
                 !File(it, SyncWorker.MARKER).exists()
-        } ?: emptyList()
+        }?.sortedBy { it.name } ?: emptyList()
+
+    /** Enqueue every completed-but-unsynced bundle under [root]. Returns count enqueued. */
+    fun enqueueAllUnsynced(context: Context, root: File): Int {
+        val dirs = findUnsynced(root)
         dirs.forEach { enqueue(context, it) }
         return dirs.size
     }

@@ -9,6 +9,7 @@ package com.polarppgbp
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -522,12 +523,20 @@ private fun RecorderScreen(
             ) {
                 OutlinedButton(
                     onClick = { viewModel.pairCuff() },
-                    enabled = viewModel.permissionsGranted && !cuffBusy && !recording,
+                    // Deliberately not gated on !recording. The cuff is a separate
+                    // peripheral: OmronCuffClient runs its own scan and its own
+                    // connectGatt, and CuffStore appends to its own file, sharing
+                    // no lock with the recorder's SessionWriter. Concurrent GATT
+                    // connections to distinct devices are supported on the
+                    // minSdk 33 floor, and taking a cuff reading *during* a
+                    // recording is the whole point of a calibration session --
+                    // that is the pairing the BP model is trained on.
+                    enabled = viewModel.permissionsGranted && !cuffBusy,
                     modifier = Modifier.weight(1f).heightIn(min = Spacing.minTouchTarget),
                 ) { Text("Pair (hold P)") }
                 OutlinedButton(
                     onClick = { viewModel.readCuff() },
-                    enabled = viewModel.permissionsGranted && !cuffBusy && !recording,
+                    enabled = viewModel.permissionsGranted && !cuffBusy,
                     modifier = Modifier.weight(1f).heightIn(min = Spacing.minTouchTarget),
                 ) { Text("Read Cuff") }
             }
@@ -1120,6 +1129,38 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         metrics = repo.metrics
         recording = repo.recording
         refreshSessions()
+        sweepUnsyncedBundles()
+    }
+
+    /**
+     * Re-enqueue any recorded bundle that never made it to the server.
+     *
+     * A session is enqueued for upload exactly once, when recording stops
+     * (RecordingService "STOP"). If that WorkManager job exhausts its retries --
+     * server unreachable for long enough, WiFi lost mid-upload, phone rebooted
+     * while offline -- nothing re-enqueued it, and since local bundles are never
+     * deleted the recording then sat on the phone indefinitely: present locally,
+     * absent from the server, with nothing surfacing that anything was wrong.
+     *
+     * Observed live: three sessions recorded during the 2026-07-27 calibration
+     * visit were still `open` server-side four days later, with only a stray ACC
+     * file staged and no PPG at all. The sweep that recovers this
+     * (SyncScheduler.enqueueAllUnsynced) already existed, but was wired only into
+     * DebugCommandReceiver, which lives in src/debug and so does not exist in the
+     * release build the phones actually run -- meaning there was no retry path at
+     * all in practice.
+     *
+     * Runs on every app start. It is a directory listing filtered to bundles with
+     * a manifest and no completion marker, and enqueue is unique-per-bundle with
+     * KEEP, so re-running cannot duplicate work or disturb an upload in flight.
+     */
+    private fun sweepUnsyncedBundles() {
+        val root = SharedRepo.repo?.bundlesRoot() ?: return
+        val n = SyncScheduler.enqueueAllUnsynced(context, root)
+        // Logged even when nothing needed re-queuing: the failure this exists to
+        // catch was silent, so "swept, found nothing" is itself worth having in a
+        // bug report, and it is one line per app start.
+        Log.i("MainActivity", "startup sync sweep: re-enqueued $n unsynced bundle(s)")
     }
 
     fun refreshSessions() {
