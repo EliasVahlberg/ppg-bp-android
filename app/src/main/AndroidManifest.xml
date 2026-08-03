@@ -53,6 +53,21 @@
     <!-- Upload session bundles to ppg-pi-server (LAN/Tailscale, plain HTTP). -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- #21: start a recording when the sensor appears, with the app closed.
+         Collection otherwise depends entirely on the user opening the app, and a clock
+         schedule is the wrong trigger because a recording only yields data while the
+         sensor is worn: an alarm fires just as readily when it is on the charger.
+         Both permissions are install-time (normal), so there is no dialog to grant;
+         only the one-off association itself is user-visible. -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+    <!-- Required by startObservingDevicePresence(). Without the call the association
+         sits at mNotifyOnDeviceNearby=false and the service is never bound. -->
+    <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE" />
+    <uses-feature
+        android:name="android.software.companion_device_setup"
+        android:required="false" />
+
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="true" />
@@ -81,5 +96,18 @@
             android:name=".RecordingService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- #21: the system binds this when the associated sensor appears, even with the
+             app closed, and the binding also raises process priority which helps a
+             multi-hour recording survive memory pressure. Must be exported and guarded
+             by BIND_COMPANION_DEVICE_SERVICE so only the system can bind it. -->
+        <service
+            android:name=".companion.SensorPresenceService"
+            android:exported="true"
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
+            <intent-filter>
+                <action android:name="android.companion.CompanionDeviceService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

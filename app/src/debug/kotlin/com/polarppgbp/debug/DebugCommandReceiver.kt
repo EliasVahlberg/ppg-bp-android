@@ -31,6 +31,8 @@ import com.polarppgbp.KEY_SERVER_URL
 import com.polarppgbp.PREFS_NAME
 import com.polarppgbp.RecordingService
 import com.polarppgbp.SharedRepo
+import com.polarppgbp.companion.SensorPresence
+import com.polarppgbp.companion.SensorPresenceService
 import com.polarppgbp.omron.OmronCuffClient
 import com.polarppgbp.rop.SensorType
 import com.polarppgbp.recorder.CalibrationSessionController
@@ -83,6 +85,17 @@ class DebugCommandReceiver : BroadcastReceiver() {
                         "metrics=${repo?.metrics?.value} " +
                         "session=${repo?.currentSessionDir() ?: "(none)"}",
                 )
+            }
+
+            // #21: arm/disarm presence-triggered recording without the Settings UI,
+            // so the companion-device path can be tested over adb. Pairs with
+            // `cmd companiondevice associate` + `simulate-device-appeared`.
+            ACTION_AUTO_RECORD -> {
+                val on = intent.getBooleanExtra("on", true)
+                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                    .putBoolean(SensorPresenceService.KEY_AUTO_RECORD, on).apply()
+                val armed = if (on) SensorPresence.arm(context) else SensorPresence.disarm(context)
+                Log.i(TAG, "AUTO_RECORD on=$on armed=$armed macs=${SensorPresence.associatedMacs(context)}")
             }
 
             ACTION_SET_SERVER -> {
@@ -419,6 +432,7 @@ class DebugCommandReceiver : BroadcastReceiver() {
         const val ACTION_READ_CUFF = "com.polarppgbp.debug.READ_CUFF"
         const val ACTION_REPAIR_CUFF_CLOCK = "com.polarppgbp.debug.REPAIR_CUFF_CLOCK"
         const val ACTION_CHECK_SERVER = "com.polarppgbp.debug.CHECK_SERVER"
+        const val ACTION_AUTO_RECORD = "com.polarppgbp.debug.AUTO_RECORD"
         const val ACTION_READ_CUFF_SETTINGS = "com.polarppgbp.debug.READ_CUFF_SETTINGS"
         const val ACTION_WRITE_CUFF_TIME = "com.polarppgbp.debug.WRITE_CUFF_TIME"
         const val ACTION_PAIR_CUFF = "com.polarppgbp.debug.PAIR_CUFF"
