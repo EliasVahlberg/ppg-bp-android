@@ -99,7 +99,40 @@ data class LiveMetrics(
     val batteryPercent: Int? = null,
     /** #14: sensor charge state, UNKNOWN until reported. */
     val chargeStatus: ChargeStatus = ChargeStatus.UNKNOWN,
-)
+    /**
+     * #19: ms from the start of streaming to each sensor's first sample.
+     *
+     * Exists because a stationary zero has two completely different causes that the
+     * counters alone cannot separate. Connecting to the sensor costs a few seconds of
+     * reconnect backoff (1s, 2s, 4s, 8s...), during which every counter sits at zero
+     * and then all of them jump together. A genuinely silent stream leaves one sensor
+     * at zero while the others climb. The 2026-07-26 report was diagnosed as the
+     * second and, on re-testing 2026-08-03, looks like the first: the counters jumped
+     * simultaneously, which a per-sensor fault cannot do.
+     *
+     * A missing key means that sensor has not delivered anything yet.
+     */
+    val firstSampleElapsedMs: Map<SensorType, Long> = emptyMap(),
+) {
+    /**
+     * Adds [n] samples for [sensor], recording the arrival time of the first one.
+     *
+     * [elapsedMs] is measured from the start of streaming, not from process start, so
+     * it is comparable across recordings. Kept pure and on the data class so the
+     * bookkeeping is unit-testable without a sensor or a Context.
+     */
+    fun withSamples(sensor: SensorType, n: Int, elapsedMs: Long): LiveMetrics {
+        val first =
+            if (firstSampleElapsedMs.containsKey(sensor)) firstSampleElapsedMs
+            else firstSampleElapsedMs + (sensor to elapsedMs)
+        return when (sensor) {
+            SensorType.PPG -> copy(ppgSamples = ppgSamples + n, firstSampleElapsedMs = first)
+            SensorType.ACC -> copy(accSamples = accSamples + n, firstSampleElapsedMs = first)
+            SensorType.GYRO -> copy(gyroSamples = gyroSamples + n, firstSampleElapsedMs = first)
+            else -> this
+        }
+    }
+}
 
 /** Thrown by chooseSetting() when a requested sample rate isn't offered by
  * the connected device (#1: configuration errors should fail loudly, not
@@ -154,6 +187,13 @@ class PolarRepository(context: Context) {
     private var gyroJob: Job? = null
     private var watchdogJob: Job? = null
     private var searchJob: Job? = null
+
+    /**
+     * Wall clock at which the current session's counters were reset, so first-sample
+     * latencies are measured from the start of this recording rather than from process
+     * start.
+     */
+    private var metricsAnchorMs: Long = 0L
 
     init {
         api.setApiCallback(object : PolarBleApiCallback() {
@@ -286,6 +326,7 @@ class PolarRepository(context: Context) {
             batteryPercent = _metrics.value.batteryPercent,
             chargeStatus = _metrics.value.chargeStatus,
         )
+        metricsAnchorMs = System.currentTimeMillis()
         val uuid = UUID.randomUUID()
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val dirName = "${profile.name}_${stamp}_${uuid.toString().take(8)}"
@@ -631,7 +672,9 @@ class PolarRepository(context: Context) {
                             )
                         )
                     }
-                    _metrics.value = _metrics.value.copy(ppgSamples = _metrics.value.ppgSamples + n)
+                    _metrics.value = _metrics.value.withSamples(
+                        SensorType.PPG, n, System.currentTimeMillis() - metricsAnchorMs
+                    )
                     withContext(Dispatchers.IO) {
                         s?.appendRecords(SensorType.PPG, buf.toByteArray(), n, rate, System.currentTimeMillis())
                     }
@@ -657,7 +700,9 @@ class PolarRepository(context: Context) {
                     for (sample in accData.samples) {
                         buf.write(packAcc(sample.timeStamp, seg, sample.x, sample.y, sample.z))
                     }
-                    _metrics.value = _metrics.value.copy(accSamples = _metrics.value.accSamples + n)
+                    _metrics.value = _metrics.value.withSamples(
+                        SensorType.ACC, n, System.currentTimeMillis() - metricsAnchorMs
+                    )
                     withContext(Dispatchers.IO) {
                         s?.appendRecords(SensorType.ACC, buf.toByteArray(), n, rate, System.currentTimeMillis())
                     }
@@ -683,7 +728,9 @@ class PolarRepository(context: Context) {
                     for (sample in gyroData.samples) {
                         buf.write(packGyro(sample.timeStamp, seg, sample.x, sample.y, sample.z))
                     }
-                    _metrics.value = _metrics.value.copy(gyroSamples = _metrics.value.gyroSamples + n)
+                    _metrics.value = _metrics.value.withSamples(
+                        SensorType.GYRO, n, System.currentTimeMillis() - metricsAnchorMs
+                    )
                     withContext(Dispatchers.IO) {
                         s?.appendRecords(SensorType.GYRO, buf.toByteArray(), n, rate, System.currentTimeMillis())
                     }

@@ -352,8 +352,15 @@ private fun RecorderScreen(
                 @Composable
                 fun counter(label: String, value: Long, sensor: SensorType) {
                     val silent = metrics.silentSensors.contains(sensor)
+                    // #19: while a counter is still zero, say how far along the sensors
+                    // that did start are. A couple of seconds is reconnect backoff and
+                    // resolves itself; a gap that keeps widening while the others count
+                    // is a real fault. Without this the two look identical.
+                    val others = metrics.firstSampleElapsedMs.values.minOrNull()
+                    val suffix =
+                        if (value == 0L && others != null) " (others at ${others / 1000}s)" else ""
                     Text(
-                        "$label $value",
+                        "$label $value$suffix",
                         style = MonoReadout,
                         color = if (silent) {
                             MaterialTheme.colorScheme.error
