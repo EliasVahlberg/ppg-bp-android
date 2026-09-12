@@ -605,6 +605,29 @@ private fun describeOffset(offsetSeconds: Long?): String {
  * it is the missing first step of setup on a phone that has never paired before.
  */
 @Composable
+private fun AboutSection() {
+    Text("About", style = MaterialTheme.typography.titleMedium)
+    // Read-only, and it shows the build number as well as the version name.
+    //
+    // The device is used remotely and updates arrive through Obtainium, so
+    // "which build is actually installed?" currently has no answer that does not
+    // involve attaching over adb -- which needs the phone to be reachable, and
+    // the times we most want to know are exactly the times it is not.
+    //
+    // versionName alone is not enough: it is a human label that can repeat across
+    // rebuilds, whereas versionCode is what Android enforces on update (it
+    // refuses an APK whose versionCode is not greater than the installed one).
+    // So when the question is "did the update land?", the build number answers it
+    // and the name does not.
+    Text(
+        "Version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.outline,
+    )
+}
+
+
+@Composable
 private fun DeviceSection(viewModel: MainViewModel) {
     var confirming by remember { mutableStateOf(false) }
     Text("Polar sensor", style = MaterialTheme.typography.titleMedium)
@@ -1030,6 +1053,8 @@ private fun SettingsScreen(viewModel: MainViewModel, onBack: () -> Unit) {
             DeviceSection(viewModel)
             Spacer(Modifier.height(Spacing.sm))
             AdvancedSection(viewModel)
+            Spacer(Modifier.height(Spacing.sm))
+            AboutSection()
 
             Spacer(Modifier.height(Spacing.lg))
 
